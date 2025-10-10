@@ -1,0 +1,36 @@
+"""
+Requirements file for NQ Backtester
+
+To install dependencies:
+    pip install -r requirements.txt
+
+For development:
+    pip install -r requirements.txt -e .
+"""
+
+# Core dependencies
+polars>=0.20.0
+pyarrow>=12.0.0
+pandas>=2.0.0  # Keep for tests compatibility
+numpy>=1.24.0  # Keep for tests compatibility  
+fastparquet>=2023.4.0
+
+# CLI interface
+click>=8.0.0
+
+# Progress bars and logging
+tqdm>=4.65.0
+
+# Performance optimization (optional but recommended)
+numba>=0.57.0
+
+# Development dependencies (optional)
+pytest>=7.0.0
+pytest-cov>=4.0.0
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.0.0
+
+# Documentation (optional)
+sphinx>=6.0.0
+sphinx-rtd-theme>=1.2.0
