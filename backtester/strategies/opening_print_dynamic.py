@@ -1,15 +1,26 @@
 """
-Opening Print Dynamic Strategy - FULLY CORRECTED
-All bugs fixed, clean implementation
+Opening Print Dynamic Strategy - TIMING BUGS FIXED ⭐
+Now matches NinjaTrader's real-time execution exactly
 
-Critical fixes:
+🔥 CRITICAL TIMING FIXES:
+✅ Entry checks on EVERY tick (not just bar close)
+✅ Uses FORMING bar data (High[0]/Low[0] that updates every tick)  
+✅ Enters immediately when price touches levels                    self.log(f"🎯 Opening Print set at {self.opening_print:.2f} (fallback)")✅ Separate flag updates (bar close) from entry execution (every tick)
+✅ One entry per bar protection (lastEntryBar equivalent)
+
+Previous critical fixes:
 ✅ Min/Max in exit calculation
-✅ Proper 5-min bar aggregation
+✅ Proper 5-min bar aggregation  
 ✅ Bar completion tracking
 ✅ Correct entry logic (uses Open[1], not Low[1])
 ✅ No duplicate methods
 ✅ Opening print from bar close
 ✅ All variables defined
+
+ARCHITECTURE:
+- on_bar_update(): Called every tick, checks entries using forming bar
+- update_strategy_flags(): Called on bar close, updates breakout/pullback flags only
+- check_for_entry_on_tick(): Real-time entry checking using current_bar (forming)
 """
 
 from datetime import datetime, time, timedelta
@@ -83,6 +94,9 @@ class OpeningPrintDynamic(BaseStrategy):
         self.stop_distance: Optional[float] = None
         self.fixed_be_triggered = False
         
+        # ✅ FIX: Add "One Entry Per Bar" protection like NinjaTrader
+        self.last_entry_bar_time: Optional[datetime] = None
+        
         # Clear bars
         self.completed_bars = []
         self.current_bar = None
@@ -97,6 +111,7 @@ class OpeningPrintDynamic(BaseStrategy):
     def on_bar_update(self, timestamp: datetime, last_price: float, order_book):
         """
         Main entry point - called on each tick
+        FIXED: Now checks entries on EVERY tick like NinjaTrader
         """
         current_time = timestamp.time()
         
@@ -111,13 +126,21 @@ class OpeningPrintDynamic(BaseStrategy):
         # Aggregate tick into 5-min bars
         bar_completed = self.aggregate_tick_to_bar(timestamp, last_price)
         
+        # Set opening print at 9:35 (check on every tick)
+        self.calculate_opening_print_on_tick(current_time)
+        
+        # ✅ CRITICAL FIX: Check entries on EVERY tick using FORMING bar
+        if self.position == 0 and self.trades_today < self.max_trades_per_day:
+            if self.opening_print_set:
+                self.check_for_entry_on_tick(timestamp, last_price)
+        
         # Manage trailing stops (can run on every tick)
         if self.position != 0:
             self.manage_trailing_stop(last_price)
         
-        # Strategy logic ONLY when a bar completes
+        # Update flags ONLY when a bar completes (don't enter here!)
         if bar_completed:
-            self.on_bar_close()
+            self.update_breakout_pullback_flags()
     
     def aggregate_tick_to_bar(self, timestamp: datetime, price: float) -> bool:
         """
@@ -170,30 +193,66 @@ class OpeningPrintDynamic(BaseStrategy):
         bar_minute = (minutes // self.bar_period_minutes) * self.bar_period_minutes
         return timestamp.replace(minute=bar_minute, second=0, microsecond=0)
     
-    def on_bar_close(self):
+    def check_for_entry_on_tick(self, timestamp: datetime, current_price: float) -> None:
         """
-        Called when a 5-minute bar completes
-        Main strategy logic runs here
+        ✅ CRITICAL FIX: Check entries on EVERY tick using FORMING bar
+        This matches NinjaTrader's real-time behavior
+        
+        C#: Called on every OnBarUpdate() when position is flat
+        """
+        # ✅ FIX: One entry per bar protection (like NinjaTrader's lastEntryBar)
+        current_bar_time = self.get_bar_start_time(timestamp)
+        if self.last_entry_bar_time == current_bar_time:
+            return  # Already entered on this bar
+        
+        # Need current forming bar (the bar being built RIGHT NOW)
+        if self.current_bar is None:
+            return
+            
+        # ✅ CRITICAL FIX: Use FORMING bar data (updates every tick)
+        # This is High[0]/Low[0] in NinjaTrader - the current bar being built
+        forming_bar_high = self.current_bar['high']
+        forming_bar_low = self.current_bar['low']
+        
+        # Check for entries using REAL-TIME bar data
+        if self.one_trade_per_pullback:
+            # Long entry: Current forming bar's high touches entry level
+            if (self.seen_long_break and self.seen_long_pullback and 
+                forming_bar_high >= self.entry_long):
+                
+                self.log(f"🔥 REAL-TIME LONG ENTRY: forming bar high {forming_bar_high:.2f} >= entry {self.entry_long:.2f}")
+                self.enter_long_position()
+                self.one_trade_per_pullback = False
+                self.last_entry_bar_time = current_bar_time  # Prevent double entry
+                
+            # Short entry: Current forming bar's low touches entry level  
+            elif (self.seen_short_break and self.seen_short_pullback and 
+                  forming_bar_low <= self.entry_short):
+                
+                self.log(f"🔥 REAL-TIME SHORT ENTRY: forming bar low {forming_bar_low:.2f} <= entry {self.entry_short:.2f}")
+                self.enter_short_position()
+                self.one_trade_per_pullback = False
+                self.last_entry_bar_time = current_bar_time  # Prevent double entry
+    
+    def update_breakout_pullback_flags(self):
+        """
+        ✅ FIXED: Only update flags on bar close (don't enter trades here!)
+        This replaces the old on_bar_close() method
         """
         # Need at least 1 completed bar
         if len(self.completed_bars) < 1:
             return
         
         current_bar = self.completed_bars[-1]
-        current_time = current_bar['timestamp'].time()
         
         # Prevent re-processing
         if self.last_processed_bar_time == current_bar['timestamp']:
             return
         self.last_processed_bar_time = current_bar['timestamp']
         
-        # Set opening print at 9:35
-        self.calculate_opening_print(current_time)
-        
-        # Entry logic when flat and under daily limit
-        if self.position == 0 and self.trades_today < self.max_trades_per_day:
-            if self.opening_print_set:
-                self.check_for_entry()
+        # Update breakout and pullback flags based on COMPLETED bars
+        if self.opening_print_set:
+            self.update_strategy_flags()
     
     def is_new_trading_day(self, timestamp: datetime) -> bool:
         """Check if new trading day"""
@@ -213,49 +272,60 @@ class OpeningPrintDynamic(BaseStrategy):
         """Check if within regular trading hours"""
         return self.session_start <= current_time <= self.session_end
     
-    def calculate_opening_print(self, current_time: time) -> None:
+    def calculate_opening_print_on_tick(self, current_time: time) -> None:
         """
-        Set opening print at 9:35 AM ET
+        🔥 CRITICAL FIX: Opening Print = Open[0] at 9:35 AM (current bar's open)
         C#: OpeningPrint = Open[0] when time >= 9:35
         
-        Uses CLOSE of the 9:30-9:35 bar
+        NOT the close of previous bar - uses OPEN of current bar at 9:35!
         """
         if not self.opening_print_set and current_time >= self.opening_print_time:
             
-            # Find the 9:30-9:35 bar
-            for bar in reversed(self.completed_bars):
-                bar_time = bar['timestamp'].time()
-                if bar_time >= self.session_start and bar_time < self.opening_print_time:
-                    # Use close of this bar as opening print
-                    self.opening_print = bar['close']
-                    self.opening_print_set = True
-                    
-                    # Reset pullback state
-                    self.one_trade_per_pullback = False
-                    self.seen_long_pullback = False
-                    self.seen_short_pullback = False
-                    
-                    # Check if this bar already broke out
-                    if self.is_candle_green(bar):
+            # ✅ CRITICAL FIX: Use Open[0] (current bar's open) like NinjaTrader
+            if self.current_bar is not None:
+                self.opening_print = self.current_bar['open']  # This is Open[0] in C#
+                self.opening_print_set = True
+                
+                # Reset pullback state
+                self.one_trade_per_pullback = False
+                self.seen_long_pullback = False
+                self.seen_short_pullback = False
+                
+                # Check if previous completed bar already broke out
+                if len(self.completed_bars) > 0:
+                    prev_bar = self.completed_bars[-1]  # This is Bar[1] in C#
+                    if self.is_candle_green(prev_bar):
                         self.seen_long_break = True
-                    elif self.is_candle_red(bar):
+                    elif self.is_candle_red(prev_bar):
                         self.seen_short_break = True
-                    
-                    self.log(f"Opening Print set at {self.opening_print:.2f} (close of 9:30 bar)")
-                    break
+                
+                self.log(f"🎯 Opening Print set at {self.opening_print:.2f} (Open[0] at 9:35)")
+            else:
+                # Fallback: use most recent completed bar's open
+                if len(self.completed_bars) > 0:
+                    latest_bar = self.completed_bars[-1]
+                    self.opening_print = latest_bar['open']
+                    self.opening_print_set = True
+                    self.log(f"🎯 Opening Print set at {self.opening_print:.2f} (fallback)")
     
-    def check_for_entry(self) -> None:
+    def update_strategy_flags(self) -> None:
         """
-        Main entry logic - exactly matches C# CheckForEntry()
-        Uses COMPLETED bars only
+        🔥 CRITICAL FIX: Match NinjaTrader bar indexing exactly
+        This runs on bar close and sets up conditions for real-time entry checking
+        
+        NinjaTrader indexing:
+        - Close[1] = Close of PREVIOUS completed bar (self.completed_bars[-1])
+        - Open[1] = Open of PREVIOUS completed bar  
+        - IsCandleGreenAtIndex(1) = Previous completed bar
         """
-        # Need at least 2 completed bars
-        if len(self.completed_bars) < 2:
+        # Need at least 1 completed bar (we check Close[1])
+        if len(self.completed_bars) < 1:
             return
         
-        current_bar = self.completed_bars[-1]  # Bar[0] in C#
-        prev_bar = self.completed_bars[-2]     # Bar[1] in C#
-        prev_close = prev_bar['close']
+        # ✅ CRITICAL FIX: NinjaTrader indexing
+        # Close[1] = Close of previous completed bar (last in our completed_bars list)
+        prev_bar = self.completed_bars[-1]     # This is Bar[1] in NinjaTrader
+        prev_close = prev_bar['close']         # This is Close[1] in NinjaTrader
         
         # Reset breakout flags if price closes back through opening print
         # C#: if ((Close[1] < OpeningPrint && seenLongBreak) || ...)
@@ -303,24 +373,8 @@ class OpeningPrintDynamic(BaseStrategy):
             self.dynamic_stop = prev_bar['high']    # C#: dynamicStop = High[1]
             self.log(f"Short pullback: entry={self.entry_short:.2f}, stop={self.dynamic_stop:.2f}")
         
-        # Trigger entries on break of pullback extremes
-        # C#: if (isOneTraderPerPullback)
-        if self.one_trade_per_pullback:
-            # C#: if (seenLongBreak && seenLongPullback && High[0] >= entryLong)
-            if (self.seen_long_break and self.seen_long_pullback and 
-                current_bar['high'] >= self.entry_long):
-                
-                self.log(f"LONG ENTRY: bar high {current_bar['high']:.2f} >= entry {self.entry_long:.2f}")
-                self.enter_long_position()
-                self.one_trade_per_pullback = False
-                
-            # C#: else if (seenShortBreak && seenShortPullback && Low[0] <= entryShort)
-            elif (self.seen_short_break and self.seen_short_pullback and 
-                  current_bar['low'] <= self.entry_short):
-                
-                self.log(f"SHORT ENTRY: bar low {current_bar['low']:.2f} <= entry {self.entry_short:.2f}")
-                self.enter_short_position()
-                self.one_trade_per_pullback = False
+        # ✅ CRITICAL FIX: NO ENTRIES HERE! 
+        # Entry checking now happens in check_for_entry_on_tick() using forming bar data
     
     def enter_long_position(self) -> None:
         """Enter long position"""

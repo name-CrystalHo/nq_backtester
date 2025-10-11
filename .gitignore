@@ -189,6 +189,7 @@ Thumbs.db
 
 # Project specific
 storage/raw/
+storage/processed/
 storage/test_debug/
 *.csv
 *.parquet
