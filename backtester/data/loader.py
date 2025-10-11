@@ -156,6 +156,11 @@ class DataLoader:
                 logger.warning(f"Empty data file: {file_path}")
                 return df
             
+            # Ensure timestamp column is datetime type
+            if 'timestamp' in df.columns and not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
+                logger.debug(f"Converting timestamp column to datetime for {instrument} on {date_str}")
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+            
             # Filter by record types
             if record_types:
                 df = df[df['record_type'].isin(record_types)]
