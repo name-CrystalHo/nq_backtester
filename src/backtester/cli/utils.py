@@ -128,37 +128,46 @@ def print_warning(message: str):
 
 
 @contextmanager
-def create_progress_bar(description: str):
+def create_progress_bar(description: str, show_current_file: bool = False):
     """
     Create a progress bar context manager.
     
     Args:
         description: Description for the progress bar
+        show_current_file: Whether to show current file being processed
         
     Yields:
         Progress bar instance
     """
     if RICH_AVAILABLE:
-        with Progress(
+        from rich.progress import TimeRemainingColumn, TimeElapsedColumn, FileSizeColumn, TransferSpeedColumn
+        
+        columns = [
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
             BarColumn(),
             TaskProgressColumn(),
-            console=Console()
-        ) as progress:
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+        ]
+        
+        if show_current_file:
+            columns.append(TextColumn("[bold blue]{task.fields[current_file]}"))
+            
+        with Progress(*columns, console=Console()) as progress:
             yield progress
     else:
         # Fallback for when rich is not available
         class SimpleProgress:
-            def add_task(self, description, total=None):
+            def add_task(self, description, total=None, **kwargs):
                 click.echo(f"Starting: {description}")
                 return 0
             
-            def update(self, task_id, completed=None, total=None):
+            def update(self, task_id, completed=None, total=None, **kwargs):
                 if completed == total and total is not None:
                     click.echo("✅ Completed!")
             
-            def advance(self, task_id):
+            def advance(self, task_id, **kwargs):
                 pass
         
         yield SimpleProgress()
