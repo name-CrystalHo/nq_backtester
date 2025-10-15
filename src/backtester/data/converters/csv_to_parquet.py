@@ -362,7 +362,7 @@ class CSVToParquetConverter(CSVConverter):
                     separator=';',
                     has_header=False,
                     ignore_errors=True,
-                    truncate_ragged_lines=False,
+                    truncate_ragged_lines=True,  # FIX: Handle variable column counts
                     raise_if_empty=False,
                     null_values=["", "NULL", "null"],  # Treat empty strings as null
                     schema={
@@ -458,7 +458,8 @@ class CSVToParquetConverter(CSVConverter):
             combined_df.sink_parquet(
                 temp_output_path,
                 compression="snappy",
-                maintain_order=False  # Remove sorting requirement to avoid materialization
+                maintain_order=False,  # Remove sorting requirement to avoid materialization
+                row_group_size=200_000  # Optimized chunk size for streaming performance
             )
             
             # Atomic rename
@@ -542,13 +543,14 @@ class CSVToParquetConverter(CSVConverter):
         _register_incomplete_file(output_path)
         
         try:
-            # Read CSV with safe column handling
+            # Read CSV with safe column handling and variable field support
             df = pl.read_csv(
                 input_path,
                 separator=';',
                 has_header=False,
                 ignore_errors=True,
-                raise_if_empty=False
+                raise_if_empty=False,
+                truncate_ragged_lines=True  # FIX: Handle variable column counts in regular mode too
             )
             
             # Standardize column names (up to 9 columns)
@@ -665,8 +667,12 @@ class CSVToParquetConverter(CSVConverter):
             l2_count = df_final.filter(pl.col("record_type") == "L2").height
             total_rows = df_final.height
             
-            # Write to Parquet
-            df_final.write_parquet(temp_output_path)
+            # Write to Parquet with optimized row group size
+            df_final.write_parquet(
+                temp_output_path,
+                compression="snappy",
+                row_group_size=200_000  # Optimized chunk size for better I/O performance
+            )
             
             # Atomic rename
             if output_path.exists():
@@ -730,10 +736,13 @@ class CSVToParquetConverter(CSVConverter):
                     error='; '.join(validation['errors'])
                 )
             
-            # Choose conversion method based on file size
+            # Choose conversion method based on file size and memory constraints
             file_size_mb = input_path.stat().st_size / (1024 * 1024)
             
-            if file_size_mb > self.streaming_threshold_mb:
+            # Force streaming mode for files >100MB when using high parallelism to prevent OOM
+            effective_threshold = min(self.streaming_threshold_mb, 100) if kwargs.get('high_parallelism') else self.streaming_threshold_mb
+            
+            if file_size_mb > effective_threshold:
                 return self.convert_streaming(input_path, output_path, **kwargs)
             else:
                 return self.convert_regular(input_path, output_path, **kwargs)

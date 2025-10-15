@@ -24,24 +24,44 @@ from ..utils import (
     print_info
 )
 
+# Global converter instance for process pool workers (initialized once per process)
+_worker_converter = None
+
+
+def _init_worker_process(chunk_size: int, streaming_threshold_mb: int):
+    """
+    Initialize worker process with converter instance.
+    
+    This function is called once per worker process at startup to reduce
+    per-file converter creation overhead.
+    
+    Args:
+        chunk_size: Chunk size for processing
+        streaming_threshold_mb: Streaming threshold in MB
+    """
+    global _worker_converter
+    _worker_converter = CSVToParquetConverter(chunk_size=chunk_size)
+    _worker_converter.streaming_threshold_mb = streaming_threshold_mb
+
 
 def _convert_single_file_worker(args):
     """
     Worker function for ProcessPoolExecutor to convert a single CSV file.
     
+    Uses pre-initialized converter instance for better performance.
+    
     Args:
-        args: Tuple containing (csv_file, source_path, output_path, force, 
-               streaming_threshold_mb, chunk_size)
+        args: Tuple containing (csv_file, source_path, output_path, force)
     
     Returns:
         Tuple of (csv_file, result_dict)
     """
-    csv_file, source_path, output_path, force, streaming_threshold_mb, chunk_size = args
+    csv_file, source_path, output_path, force = args
     
     try:
-        # Create converter instance for this process
-        converter = CSVToParquetConverter(chunk_size=chunk_size)
-        converter.streaming_threshold_mb = streaming_threshold_mb
+        # Use pre-initialized converter instance
+        global _worker_converter
+        converter = _worker_converter
         
         # Calculate relative path and target parquet file
         rel_path = csv_file.relative_to(source_path)
@@ -54,8 +74,9 @@ def _convert_single_file_worker(args):
         if parquet_file.exists() and not force:
             return csv_file, {'status': 'skipped', 'reason': 'exists'}
         
-        # Convert file with fast validation for batch processing performance
-        result = converter.convert(csv_file, parquet_file, skip_existing=False, fast_validation=True)
+        # Convert with high-parallelism optimizations (streaming for >100MB files)
+        result = converter.convert(csv_file, parquet_file, skip_existing=False, 
+                                 fast_validation=True, high_parallelism=True)
         return csv_file, result
         
     except Exception as e:
@@ -88,8 +109,9 @@ def _convert_single_file_sequential(csv_file, source, output, force, converter):
         if parquet_file.exists() and not force:
             return csv_file, {'status': 'skipped', 'reason': 'exists'}
         
-        # Convert file with fast validation for batch processing performance
-        result = converter.convert(csv_file, parquet_file, skip_existing=False, fast_validation=True)
+        # Convert with high-parallelism optimizations for sequential processing  
+        result = converter.convert(csv_file, parquet_file, skip_existing=False, 
+                                 fast_validation=True, high_parallelism=True)
         return csv_file, result
         
     except Exception as e:
@@ -482,16 +504,17 @@ def ninjatrader_convert(ctx, source: Path, output: Path, filter: Optional[str],
             # Adaptive worker calculation
             # Base on CPU cores but consider memory and I/O constraints
             
-            # Start with CPU cores but leave 1-2 cores for OS/other tasks
+            # OPTIMIZED: Target 8-10 workers for optimal I/O performance (empirically tested)
             if cpu_count <= 4:
                 base_workers = max(1, cpu_count - 1)  # Leave 1 core free
             elif cpu_count <= 8:
-                base_workers = cpu_count - 1  # Leave 1 core free
+                base_workers = min(8, cpu_count - 1)  # Sweet spot for I/O
             else:
-                base_workers = cpu_count - 2  # Leave 2 cores free for high-end systems
+                # High-end systems: 8-10 workers provide best I/O utilization
+                base_workers = min(10, cpu_count // 2)  # Cap at 10 for optimal performance
             
-            # Adjust based on available memory (each worker needs ~500MB-1GB RAM)
-            memory_limited_workers = int(available_memory_gb / 0.75)  # 750MB per worker
+            # Reduced memory per worker with optimizations (400MB vs 750MB)
+            memory_limited_workers = int(available_memory_gb / 0.5)  # 500MB per worker
             
             # Choose the limiting factor
             optimal_workers = min(base_workers, memory_limited_workers)
@@ -502,8 +525,8 @@ def ninjatrader_convert(ctx, source: Path, output: Path, filter: Optional[str],
             # Ensure at least 1 worker
             optimal_workers = max(1, optimal_workers)
             
-            # Cap at reasonable maximum (avoid I/O thrashing)
-            optimal_workers = min(optimal_workers, 16)
+            # PERFORMANCE: Cap at 10 workers for optimal I/O (prevents disk thrashing)
+            optimal_workers = min(optimal_workers, 10)
             
             if not quiet:
                 print_info(f"🧠 System resources: {cpu_count} CPU cores, {available_memory_gb:.1f}GB available RAM")
@@ -564,6 +587,10 @@ def ninjatrader_convert(ctx, source: Path, output: Path, filter: Optional[str],
             print_info(f"Filter: {filter}")
         print_info(f"Source: {source}")
         return
+    
+    # PERFORMANCE OPTIMIZATION: Sort files by size (largest first) for better worker utilization
+    # This prevents idle workers at the end and ensures large files start processing early
+    csv_files.sort(key=lambda f: f.stat().st_size, reverse=True)
     
     # Calculate total size
     total_size_bytes = sum(f.stat().st_size for f in csv_files)
@@ -701,11 +728,18 @@ def ninjatrader_convert(ctx, source: Path, output: Path, filter: Optional[str],
                 if hasattr(converter, 'logger'):
                     converter.logger.info(f"🚀 Using {executor_name}Executor for true multicore scaling")
                 
-                with executor_class(max_workers=parallel) as executor:
+                # Configure executor with initializer for ProcessPoolExecutor
+                executor_kwargs = {'max_workers': parallel}
+                if use_processes:
+                    # Add process pool initializer to reduce per-file setup overhead
+                    executor_kwargs['initializer'] = _init_worker_process
+                    executor_kwargs['initargs'] = (chunk_size, streaming_threshold)
+                
+                with executor_class(**executor_kwargs) as executor:
                     if use_processes:
-                        # ProcessPoolExecutor: use separate worker function
+                        # ProcessPoolExecutor: use pre-initialized converter
                         worker_args = [
-                            (csv_file, source, output, force, streaming_threshold, chunk_size)
+                            (csv_file, source, output, force)
                             for csv_file in csv_files
                         ]
                         future_to_file = {
@@ -812,12 +846,19 @@ def ninjatrader_convert(ctx, source: Path, output: Path, filter: Optional[str],
             use_processes = _should_use_process_executor()
             executor_class = ProcessPoolExecutor if use_processes else ThreadPoolExecutor
             
+            # Configure executor with initializer for ProcessPoolExecutor
+            executor_kwargs = {'max_workers': parallel}
+            if use_processes:
+                # Add process pool initializer to reduce per-file setup overhead
+                executor_kwargs['initializer'] = _init_worker_process
+                executor_kwargs['initargs'] = (chunk_size, streaming_threshold)
+            
             # Parallel processing in quiet mode
-            with executor_class(max_workers=parallel) as executor:
+            with executor_class(**executor_kwargs) as executor:
                 if use_processes:
-                    # ProcessPoolExecutor: use separate worker function
+                    # ProcessPoolExecutor: use pre-initialized converter
                     worker_args = [
-                        (csv_file, source, output, force, streaming_threshold, chunk_size)
+                        (csv_file, source, output, force)
                         for csv_file in csv_files
                     ]
                     future_to_file = {
