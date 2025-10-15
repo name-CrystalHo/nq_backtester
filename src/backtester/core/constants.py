@@ -1,0 +1,81 @@
+"""Constants used throughout the backtester."""
+
+from decimal import Decimal
+
+# Market constants
+DEFAULT_TICK_SIZE = 0.25
+DEFAULT_CONTRACT_MULTIPLIER = 20  # For NQ futures
+DEFAULT_COMMISSION = 2.50  # Per round trip
+
+# NQ Futures specific
+NQ_TICK_SIZE = 0.25
+NQ_MULTIPLIER = 20
+NQ_MIN_TICK_VALUE = NQ_TICK_SIZE * NQ_MULTIPLIER  # $5.00 per tick
+
+# ES Futures
+ES_TICK_SIZE = 0.25
+ES_MULTIPLIER = 50
+ES_MIN_TICK_VALUE = ES_TICK_SIZE * ES_MULTIPLIER  # $12.50 per tick
+
+# Time constants
+NANOSECONDS_PER_SECOND = 1_000_000_000
+MICROSECONDS_PER_SECOND = 1_000_000
+MILLISECONDS_PER_SECOND = 1_000
+
+# Market hours (Eastern Time)
+MARKET_OPEN_HOUR = 9
+MARKET_OPEN_MINUTE = 30
+MARKET_CLOSE_HOUR = 16
+MARKET_CLOSE_MINUTE = 0
+
+EXTENDED_OPEN_HOUR = 18  # 6 PM previous day
+EXTENDED_CLOSE_HOUR = 17  # 5 PM
+
+# Data constants
+MAX_ORDER_BOOK_LEVELS = 10
+DEFAULT_BAR_PERIOD_MINUTES = 5
+
+# File constants
+PARQUET_ENGINE = "pyarrow"
+CSV_ENCODING = "utf-8"
+DATE_FORMAT = "%Y%m%d"
+DATETIME_FORMAT = "%Y%m%d%H%M%S"
+
+# Performance constants
+DEFAULT_CHUNK_SIZE = 100_000
+MAX_MEMORY_USAGE_GB = 8.0
+DEFAULT_WORKER_COUNT = 4
+
+# Risk management
+MAX_POSITION_SIZE = 10  # contracts
+DEFAULT_STOP_LOSS_TICKS = 60
+DEFAULT_PROFIT_TARGET_TICKS = 240  # 4:1 risk/reward
+
+# Strategy constants
+OPENING_PRINT_TIME = "09:35:00"  # Eastern Time
+STRATEGY_START_TIME = "09:40:00"
+STRATEGY_END_TIME = "15:30:00"
+
+# Validation constants
+MIN_PRICE = 0.0
+MAX_PRICE = 100_000.0
+MIN_VOLUME = 1
+MAX_VOLUME = 1_000_000
+
+# Schema versions
+SCHEMA_VERSION_V1 = "v1"
+SCHEMA_VERSION_V2 = "v2" 
+CURRENT_SCHEMA_VERSION = SCHEMA_VERSION_V2
+
+# Cache settings
+CACHE_EXPIRY_HOURS = 24
+MAX_CACHE_SIZE_MB = 1024
+
+# Logging
+DEFAULT_LOG_LEVEL = "INFO"
+LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# Decimal precision
+PRICE_PRECISION = Decimal("0.01")
+VOLUME_PRECISION = Decimal("1")
+PNL_PRECISION = Decimal("0.01")
