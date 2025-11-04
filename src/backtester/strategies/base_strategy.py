@@ -61,7 +61,8 @@ class StrategyParams:
     tick_size: float = 0.25  # Minimum price increment
     
     # Timing constraints
-    start_time: str = "09:30:00"  # Strategy start time
+    start_time: str = "09:30:00"  # Data collection start (bars, patterns)
+    trading_start_time: str = "09:30:00"  # Earliest time to take trades
     end_time: str = "16:00:00"    # Strategy end time
     max_trade_duration: int = 300  # Max trade duration in minutes
     
@@ -82,6 +83,7 @@ class StrategyParams:
             'point_value': self.point_value,
             'tick_size': self.tick_size,
             'start_time': self.start_time,
+            'trading_start_time': self.trading_start_time,
             'end_time': self.end_time,
             'max_trade_duration': self.max_trade_duration,
             'use_stops': self.use_stops,
@@ -156,6 +158,7 @@ class BaseStrategy(ABC):
         
         # Cache time parsing (CRITICAL OPTIMIZATION: 15-30% speedup)
         self._start_time_sec = self._parse_time_to_seconds(params.start_time)
+        self._trading_start_time_sec = self._parse_time_to_seconds(params.trading_start_time)
         self._end_time_sec = self._parse_time_to_seconds(params.end_time)
     
     @abstractmethod
@@ -213,7 +216,7 @@ class BaseStrategy(ABC):
                     self.current_bar = new_bar
                     self.bar_history.append(new_bar)
         
-        # Check if strategy should be active
+        # Check if strategy should be active (for data collection)
         self._update_active_status(timestamp_ns)
         
         if not self.is_active:
@@ -224,6 +227,10 @@ class BaseStrategy(ABC):
         
         # Check risk limits
         if self._check_risk_limits():
+            return [], fills
+        
+        # Only generate signals if we're in trading window
+        if not self._is_trading_allowed(timestamp_ns):
             return [], fills
         
         # Generate signals
@@ -429,6 +436,12 @@ class BaseStrategy(ABC):
         seconds_since_midnight = (timestamp_ns // 1_000_000_000) % 86400
         self.is_active = (self._start_time_sec <= seconds_since_midnight <= self._end_time_sec 
                           and not self.max_daily_loss_hit)
+    
+    def _is_trading_allowed(self, timestamp_ns: int) -> bool:
+        """Check if trading is allowed (vs just data collection)"""
+        seconds_since_midnight = (timestamp_ns // 1_000_000_000) % 86400
+        return (self._trading_start_time_sec <= seconds_since_midnight <= self._end_time_sec 
+                and not self.max_daily_loss_hit)
     
     def _parse_time_to_seconds(self, time_str: str) -> int:
         """Convert HH:MM:SS to seconds since midnight (parsed once, not every tick)"""

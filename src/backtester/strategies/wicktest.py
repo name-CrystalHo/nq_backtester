@@ -531,7 +531,8 @@ def create_wicktest_strategy(
     risk_ticks: int = 40,
     profit_ticks: int = 40,
     min_engulfing_ratio: float = 1.4,
-    max_trades_per_day: int = 100
+    max_trades_per_day: int = 100,
+    trading_start_time: str = "09:45:00"
 ) -> WickTestStrategy:
     """
     Factory function to create WickTest strategy with common configurations.
@@ -541,6 +542,7 @@ def create_wicktest_strategy(
         profit_ticks: Profit target in ticks (default: 40) 
         min_engulfing_ratio: Minimum engulfing ratio (default: 1.4)
         max_trades_per_day: Maximum trades per day (default: 100)
+        trading_start_time: Earliest time to take trades (default: 09:45:00)
         
     Returns:
         Configured WickTestStrategy instance
@@ -569,8 +571,9 @@ def create_wicktest_strategy(
         risk_per_trade=100.0,
         max_daily_loss=500.0,
         
-        # Session management
-        start_time="09:30:00",
+        # Session management: collect bars from 9:30, trade from 9:45
+        start_time="09:30:00",  # Bar collection starts at market open
+        trading_start_time=trading_start_time,  # Trading starts at 9:45 AM
         end_time="16:00:00",
         max_trade_duration=300
     )
