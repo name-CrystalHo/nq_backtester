@@ -7,9 +7,17 @@ from NinjaTrader Market Replay data.
 
 __version__ = "0.1.0"
 
-# Core types and exceptions are always available
-from .core import *
+# Core components
+from .engine.backtester import Backtester
+from .data.loader import DataLoader
+from .data.order_book import OrderBook
+from .strategies.base_strategy import BaseStrategy
+from .metrics.performance import PerformanceMetrics
 
 __all__ = [
-    "__version__",
+    "Backtester",
+    "DataLoader", 
+    "OrderBook",
+    "BaseStrategy",
+    "PerformanceMetrics",
 ]

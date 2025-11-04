@@ -1,0 +1,54 @@
+# WickTest Strategy Configuration
+# Engulfing Candle Retest Strategy for Futures Trading
+
+strategy:
+  name: "WickTest"
+  description: "Engulfing candle retest strategy with 1:1 risk/reward"
+
+# Pattern Recognition Parameters
+pattern:
+  min_engulfing_ratio: 1.4      # Minimum engulfing body size (140% of setup candle)
+  min_bars_required: 3          # Minimum bars needed for pattern detection
+  bar_period_minutes: 5         # Bar aggregation period
+
+# Risk Management
+risk:
+  risk_ticks: 40                # Stop loss in ticks (10 points for NQ)
+  profit_ticks: 40              # Profit target in ticks (10 points for NQ)
+  max_position_size: 1          # Maximum position size
+  max_daily_loss: 500.0         # Maximum daily loss in dollars
+  use_stops: true               # Enable stop loss orders
+  use_targets: true             # Enable profit target orders
+
+# Position Management
+position:
+  max_trades_per_day: 100       # Maximum trades per day
+  max_trades_per_bar: 1         # Maximum trades per bar (one_trade_per_bar)
+  exit_on_session_close: true   # Exit positions before session close
+  exit_before_close_seconds: 30 # Seconds before close to exit
+
+# Timing Constraints
+timing:
+  start_time: "09:30:00"        # Strategy start time (ET)
+  end_time: "16:00:00"          # Strategy end time (ET)
+  max_trade_duration: 300       # Max trade duration in minutes
+
+# Contract Specifications (will be overridden by contract selection)
+contract:
+  tick_size: 0.25               # Minimum price increment
+  point_value: 20.0             # Dollar value per point
+  commission_per_trade: 4.0     # Round trip commission
+
+# Execution Settings
+execution:
+  fill_type: "realistic"        # Fill simulation type: market, limit, realistic
+  slippage_ticks: 0             # Additional slippage in ticks
+  market_impact: false          # Enable market impact modeling
+
+# Reporting
+reporting:
+  save_trades: true             # Save individual trade records
+  save_signals: true            # Save all generated signals
+  create_charts: true           # Generate performance charts
+  export_csv: true              # Export results to CSV
+  export_json: true             # Export results to JSON

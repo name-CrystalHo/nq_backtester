@@ -1,0 +1,340 @@
+"""
+Comprehensive tests for CSV to Parquet converter with real NinjaTrader data.
+
+This test suite validates the conversion process using the real NinjaTrader CSV data
+provided by the user to ensure data integrity and performance.
+"""
+
+import pytest
+import pandas as pd
+import sys
+from pathlib import Path
+import tempfile
+import shutil
+from datetime import datetime
+import numpy as np
+import time
+
+# Add backtester to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from backtester.data.converter import (
+    convert_single_csv, 
+    convert_csv_to_parquet,
+    parse_timestamp,
+    validate_csv_file
+)
+from backtester.data.loader import DataLoader
+
+
+class TestCSVToParquetConverter:
+    """Test suite for CSV to Parquet conversion functionality."""
+    
+    @pytest.fixture
+    def test_data_dir(self):
+        """Get the test data directory path."""
+        return Path(__file__).parent / "test_data"
+    
+    @pytest.fixture
+    def real_csv_file(self, test_data_dir):
+        """Get the real NinjaTrader CSV file path."""
+        # Use the real sample provided by user
+        csv_file = test_data_dir / "csv" / "NQ SEP25" / "20250330.csv"
+        if not csv_file.exists():
+            pytest.skip(f"Real CSV file not found: {csv_file}")
+        return csv_file
+    
+    @pytest.fixture
+    def temp_output_dir(self):
+        """Create a temporary output directory for tests."""
+        temp_dir = tempfile.mkdtemp()
+        yield Path(temp_dir)
+        # Cleanup
+        shutil.rmtree(temp_dir, ignore_errors=True)
+    
+    def test_parse_timestamp(self):
+        """Test timestamp parsing functionality."""
+        # Test basic timestamp parsing
+        timestamp_str = "20250328000000"
+        offset = 5150000
+        
+        result = parse_timestamp(timestamp_str, offset)
+        
+        # Should be March 28, 2025 + 0.515 seconds
+        expected = pd.Timestamp('2025-03-28 00:00:00.515')
+        assert result == expected
+        
+        # Test with different offset
+        offset2 = 10320000  # 1.032 seconds
+        result2 = parse_timestamp(timestamp_str, offset2)
+        expected2 = pd.Timestamp('2025-03-28 00:00:01.032')
+        assert result2 == expected2
+    
+    def test_csv_file_exists(self, sample_csv_file):
+        """Test that the sample CSV file exists and is readable."""
+        assert sample_csv_file.exists(), f"Sample CSV file not found: {sample_csv_file}"
+        assert sample_csv_file.is_file(), f"Path is not a file: {sample_csv_file}"
+        
+        # Test file can be read
+        with open(sample_csv_file, 'r') as f:
+            lines = f.readlines()
+        
+        assert len(lines) > 0, "CSV file is empty"
+        print(f"✅ Sample CSV file has {len(lines)} lines")
+    
+    def test_csv_validation(self, sample_csv_file):
+        """Test CSV file validation functionality."""
+        result = validate_csv_file(sample_csv_file)
+        
+        assert result['valid'], f"CSV validation failed: {result['errors']}"
+        assert result['total_records'] > 0, "No records found in CSV"
+        assert result['l1_records'] > 0, "No L1 records found"
+        assert result['l2_records'] > 0, "No L2 records found"
+        
+        print(f"✅ CSV validation passed:")
+        print(f"   Total records: {result['total_records']}")
+        print(f"   L1 records: {result['l1_records']}")
+        print(f"   L2 records: {result['l2_records']}")
+        print(f"   Instruments: {result['instruments']}")
+        print(f"   Date range: {result['date_range']}")
+    
+    def test_single_csv_conversion(self, sample_csv_file, temp_output_dir):
+        """Test converting a single CSV file to Parquet."""
+        # Convert the CSV file
+        result = convert_single_csv(sample_csv_file, temp_output_dir)
+        
+        # Validate conversion results
+        assert result['rows'] > 0, "No rows were converted"
+        assert result['l1_records'] > 0, "No L1 records were converted"
+        assert result['l2_records'] > 0, "No L2 records were converted"
+        assert result['size_mb'] > 0, "Output file has no size"
+        
+        print(f"✅ Conversion completed:")
+        print(f"   Rows processed: {result['rows']:,}")
+        print(f"   L1 records: {result['l1_records']:,}")
+        print(f"   L2 records: {result['l2_records']:,}")
+        print(f"   Output size: {result['size_mb']:.3f} MB")
+        
+        # Check that output files were created
+        parquet_files = list(temp_output_dir.rglob("*.parquet"))
+        assert len(parquet_files) > 0, "No Parquet files were created"
+        
+        # Expected path: NQ_SEP25/year=2025/month=03/20250328.parquet
+        expected_instrument = "NQ_SEP25"
+        expected_year = "2025"
+        expected_month = "03"
+        
+        instrument_dir = temp_output_dir / expected_instrument
+        assert instrument_dir.exists(), f"Instrument directory not created: {instrument_dir}"
+        
+        year_dir = instrument_dir / f"year={expected_year}"
+        assert year_dir.exists(), f"Year directory not created: {year_dir}"
+        
+        month_dir = year_dir / f"month={expected_month}"
+        assert month_dir.exists(), f"Month directory not created: {month_dir}"
+        
+        parquet_file = month_dir / "20250328.parquet"
+        assert parquet_file.exists(), f"Parquet file not created: {parquet_file}"
+        
+        # Don't return values in pytest test methods
+        # Store for use by other test methods
+        self.last_parquet_file = parquet_file
+        self.last_conversion_result = result
+    
+    def test_csv_parquet_data_match(self, sample_csv_file, temp_output_dir):
+        """Test that CSV and Parquet files contain identical data."""
+        # Convert CSV to Parquet first
+        self.test_single_csv_conversion(sample_csv_file, temp_output_dir)
+        parquet_file = self.last_parquet_file
+        conversion_result = self.last_conversion_result
+        
+        # Read original CSV data manually
+        csv_records = []
+        with open(sample_csv_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split(';')
+                if len(parts) >= 8:
+                    csv_records.append(parts)
+        
+        # Read Parquet data
+        parquet_df = pd.read_parquet(parquet_file)
+        
+        print(f"✅ Data comparison:")
+        print(f"   CSV records: {len(csv_records)}")
+        print(f"   Parquet records: {len(parquet_df)}")
+        
+        # Basic count validation
+        assert len(csv_records) == len(parquet_df), f"Record count mismatch: CSV={len(csv_records)}, Parquet={len(parquet_df)}"
+        
+        # Validate L1/L2 record counts by record_type
+        csv_l1_count = sum(1 for r in csv_records if r[0] == 'L1')
+        csv_l2_count = sum(1 for r in csv_records if r[0] == 'L2')
+        
+        parquet_l1_count = len(parquet_df[parquet_df['record_type'] == 'L1'])
+        parquet_l2_count = len(parquet_df[parquet_df['record_type'] == 'L2'])
+        
+        assert csv_l1_count == parquet_l1_count, f"L1 count mismatch: CSV={csv_l1_count}, Parquet={parquet_l1_count}"
+        assert csv_l2_count == parquet_l2_count, f"L2 count mismatch: CSV={csv_l2_count}, Parquet={parquet_l2_count}"
+        
+        print(f"   L1 records match: {csv_l1_count}")
+        print(f"   L2 records match: {csv_l2_count}")
+        
+        # Validate specific data points
+        self._validate_sample_records(csv_records, parquet_df)
+        
+        print("✅ CSV and Parquet data validation passed!")
+    
+    def _validate_sample_records(self, csv_records, parquet_df):
+        """Validate that specific records match between CSV and Parquet."""
+        # Check first few records
+        for i in range(min(5, len(csv_records))):
+            csv_record = csv_records[i]
+            parquet_record = parquet_df.iloc[i]
+            
+            # Validate record type
+            expected_record_type = csv_record[0]
+            assert parquet_record['record_type'] == expected_record_type, f"Record {i}: record_type mismatch"
+            
+            # Validate market_data_type matches CSV column 1
+            expected_mdt = int(csv_record[1])
+            assert parquet_record['market_data_type'] == expected_mdt, f"Record {i}: market_data_type mismatch"
+            
+            # Validate timestamp (approximate due to precision)
+            csv_date = csv_record[2]
+            csv_offset = int(csv_record[3])
+            expected_ts = parse_timestamp(csv_date, csv_offset)
+            
+            # Allow small timestamp differences due to precision
+            ts_diff = abs((parquet_record['timestamp'] - expected_ts).total_seconds())
+            assert ts_diff < 0.001, f"Record {i}: timestamp mismatch > 1ms"
+            
+            # Validate price (position depends on record type)
+            if expected_record_type == 'L1':
+                # L1: price is in column 4
+                if len(csv_record) > 4 and csv_record[4]:
+                    try:
+                        csv_price = float(csv_record[4])
+                        assert abs(parquet_record['price'] - csv_price) < 0.01, f"Record {i}: L1 price mismatch"
+                    except (ValueError, KeyError):
+                        pass
+            elif expected_record_type == 'L2':
+                # L2: price is in column 7 
+                if len(csv_record) > 7 and csv_record[7]:
+                    try:
+                        csv_price = float(csv_record[7])
+                        assert abs(parquet_record['price'] - csv_price) < 0.01, f"Record {i}: L2 price mismatch"
+                    except (ValueError, KeyError):
+                        pass
+    
+    def test_data_loader_integration(self, sample_csv_file, temp_output_dir):
+        """Test that converted data can be loaded by DataLoader."""
+        # Convert CSV to Parquet first
+        self.test_single_csv_conversion(sample_csv_file, temp_output_dir)
+        
+        # Initialize DataLoader
+        loader = DataLoader(str(temp_output_dir))
+        
+        # Test instrument discovery
+        instruments = loader.get_available_instruments()
+        assert "NQ_SEP25" in instruments, f"Instrument not found: {instruments}"
+        
+        # Test date discovery
+        dates = loader.get_available_dates("NQ_SEP25")
+        assert "20250328" in dates, f"Date not found: {dates}"
+        
+        # Test data loading
+        data = loader.load_day("NQ_SEP25", "20250328")
+        assert not data.empty, "Loaded data is empty"
+        assert len(data) > 0, "No records loaded"
+        
+        # Validate data structure
+        required_columns = ['timestamp', 'market_data_type', 'price', 'volume']
+        for col in required_columns:
+            assert col in data.columns, f"Required column missing: {col}"
+        
+        # Test data types
+        assert pd.api.types.is_datetime64_any_dtype(data['timestamp']), "Timestamp column is not datetime"
+        assert pd.api.types.is_numeric_dtype(data['market_data_type']), "market_data_type is not numeric"
+        
+        print(f"✅ DataLoader integration successful:")
+        print(f"   Instruments: {instruments}")
+        print(f"   Dates: {dates}")
+        print(f"   Records loaded: {len(data)}")
+        print(f"   Columns: {list(data.columns)}")
+        
+        # Don't return in pytest
+        self.loaded_data = data
+    
+    def test_performance_metrics(self, sample_csv_file, temp_output_dir):
+        """Test conversion performance and validate output size."""
+        import time
+        
+        # Measure conversion time
+        start_time = time.time()
+        result = convert_single_csv(sample_csv_file, temp_output_dir)
+        conversion_time = time.time() - start_time
+        
+        # Calculate performance metrics
+        records_per_second = result['rows'] / conversion_time if conversion_time > 0 else 0
+        
+        print(f"✅ Performance metrics:")
+        print(f"   Conversion time: {conversion_time:.3f} seconds")
+        print(f"   Records/second: {records_per_second:,.0f}")
+        print(f"   Output size: {result['size_mb']:.3f} MB")
+        
+        # Basic performance assertions
+        assert conversion_time < 10.0, f"Conversion took too long: {conversion_time:.3f}s"
+        assert records_per_second > 10, f"Conversion too slow: {records_per_second:,.0f} records/sec"
+        assert result['size_mb'] < 10.0, f"Output file too large: {result['size_mb']:.3f} MB"
+    
+    def test_directory_conversion(self, test_data_dir, temp_output_dir):
+        """Test converting an entire directory of CSV files."""
+        csv_dir = test_data_dir / "csv"
+        
+        # Convert entire directory
+        result = convert_csv_to_parquet(
+            source_dir=csv_dir,
+            output_dir=temp_output_dir,
+            max_workers=2
+        )
+        
+        assert result['processed'] > 0, "No files were processed"
+        assert result['total_rows'] > 0, "No records were processed"
+        assert len(result['failed_files']) == 0, f"Files failed: {result['failed_files']}"
+        
+        print(f"✅ Directory conversion successful:")
+        print(f"   Files processed: {result['processed']}")
+        print(f"   Total records: {result['total_rows']:,}")
+        print(f"   Total size: {result['total_size_mb']:.3f} MB")
+        print(f"   Failed files: {len(result['failed_files'])}")
+
+
+def test_create_expected_parquet_output():
+    """Helper test to create expected Parquet output for comparison."""
+    test_data_dir = Path(__file__).parent / "test_data"
+    csv_file = test_data_dir / "csv" / "NQ SEP25" / "20250328.csv"
+    parquet_output_dir = test_data_dir / "parquet"
+    
+    if csv_file.exists():
+        # Convert and save expected output
+        result = convert_single_csv(csv_file, parquet_output_dir)
+        
+        print(f"✅ Created expected Parquet output:")
+        print(f"   Records: {result['rows']}")
+        print(f"   Output dir: {parquet_output_dir}")
+        
+        # List created files
+        parquet_files = list(parquet_output_dir.rglob("*.parquet"))
+        for pf in parquet_files:
+            print(f"   Created: {pf.relative_to(test_data_dir)}")
+
+
+if __name__ == "__main__":
+    # Run the test to create expected output
+    test_create_expected_parquet_output()
+    
+    # Run all tests
+    pytest.main([__file__, "-v", "--tb=short"])

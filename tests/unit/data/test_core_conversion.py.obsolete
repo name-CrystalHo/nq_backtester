@@ -1,0 +1,269 @@
+"""
+Core tests for CSV conversion with error handling and cleanup.
+
+Focused tests for the most critical functionality:
+- Robust CSV to Parquet conversion with Polars
+- Cleanup on interruption
+- Pattern matching
+"""
+
+import pytest
+import tempfile
+import shutil
+from pathlib import Path
+import sys
+
+# Add project to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.backtester.data.converter import (
+    convert_single_csv, 
+    _matches_instrument_pattern,
+    _register_incomplete_file,
+    _cleanup_incomplete_files,
+    extract_instrument_info
+)
+from src.backtester.prod_cli import _filter_instruments_by_pattern
+
+# Import for validation (use polars if available, pandas as fallback)
+try:
+    import polars as pl
+    POLARS_AVAILABLE = True
+except ImportError:
+    POLARS_AVAILABLE = False
+    
+try:
+    import pandas as pd
+    PANDAS_AVAILABLE = True
+except ImportError:
+    PANDAS_AVAILABLE = False
+
+
+class TestCriticalFunctionality:
+    """Test critical conversion and cleanup functionality."""
+    
+    @pytest.fixture
+    def temp_workspace(self):
+        """Create temporary workspace."""
+        temp_dir = tempfile.mkdtemp()
+        yield Path(temp_dir)
+        shutil.rmtree(temp_dir)
+    
+    def test_pattern_matching_2025_contracts(self):
+        """Test that '25' pattern correctly filters 2025 contracts."""
+        instruments = [
+            "NQ JUN22", "NQ JUN23", "NQ JUN24", "NQ JUN25",
+            "NQ MAR22", "NQ MAR23", "NQ MAR24", "NQ MAR25", 
+            "NQ SEP22", "NQ SEP23", "NQ SEP24", "NQ SEP25"
+        ]
+        
+        # Test the exact case user wants: '25' should get only 2025 contracts
+        result = _filter_instruments_by_pattern(instruments, "25")
+        expected_2025 = ["NQ JUN25", "NQ MAR25", "NQ SEP25"]
+        
+        assert len(result) == 3
+        for contract in expected_2025:
+            assert contract in result
+        
+        # Verify 2022-2024 contracts are NOT included
+        non_2025 = [inst for inst in instruments if "25" not in inst]
+        for contract in non_2025:
+            assert contract not in result
+    
+    def test_exclusion_pattern(self):
+        """Test exclusion pattern '!25' excludes 2025 contracts."""
+        instruments = ["NQ JUN22", "NQ JUN25", "NQ MAR25"]
+        
+        result = _filter_instruments_by_pattern(instruments, "!25")
+        assert len(result) == 1
+        assert "NQ JUN22" in result
+        assert "NQ JUN25" not in result
+        assert "NQ MAR25" not in result
+    
+    def test_robust_csv_conversion(self, temp_workspace):
+        """Test CSV conversion with robust error handling."""
+        # Create test CSV with valid data
+        csv_data = [
+            "L1;0;20250330120000;600000;19381.25;1",
+            "L2;0;20250330120001;700000;2;10;MM1;19383.25;5",  # Fixed: operation=2, position=10
+            "L1;0;20250330120002;800000;19381.75;3"
+        ]
+        
+        # Setup test structure
+        instrument_dir = temp_workspace / "NQ_JUN25"
+        instrument_dir.mkdir(parents=True)
+        csv_file = instrument_dir / "20250330.csv"
+        csv_file.write_text('\n'.join(csv_data))
+        
+        output_dir = temp_workspace / "output"
+        
+        # Convert
+        result = convert_single_csv(csv_file, output_dir, skip_existing=False)
+        
+        # Verify success
+        assert result['status'] == 'success'
+        assert result['rows'] == 3
+        assert result['l1_records'] == 2
+        assert result['l2_records'] == 1
+        assert result['error'] is None
+        
+        # Verify output file
+        output_file = output_dir / "NQ_JUN25" / "year=2025" / "month=03" / "20250330.parquet"
+        assert output_file.exists()
+        
+        # Verify file content (use Polars if available, otherwise pandas)
+        if POLARS_AVAILABLE:
+            df = pl.read_parquet(output_file)
+            assert df.height == 3
+            assert df.filter(pl.col("record_type") == "L1").height == 2
+            assert df.filter(pl.col("record_type") == "L2").height == 1
+        elif PANDAS_AVAILABLE:
+            df = pd.read_parquet(output_file)
+            assert len(df) == 3
+            assert len(df[df['record_type'] == 'L1']) == 2
+            assert len(df[df['record_type'] == 'L2']) == 1
+        
+        # Verify no temp files remain
+        temp_files = list(output_dir.rglob("*.tmp"))
+        assert len(temp_files) == 0
+    
+    def test_cleanup_on_conversion_failure(self, temp_workspace):
+        """Test cleanup when conversion fails by using malformed CSV."""
+        # Create CSV with malformed data that will cause parsing errors
+        csv_data = ["L1;NOT_A_NUMBER;20250330120000;600000;19381.25;1"]  # market_data_type should be int
+        instrument_dir = temp_workspace / "NQ_JUN25"
+        instrument_dir.mkdir(parents=True)
+        csv_file = instrument_dir / "20250330.csv"
+        csv_file.write_text('\n'.join(csv_data))
+        
+        output_dir = temp_workspace / "output"
+        
+        # Conversion should return error result (not raise exception)
+        result = convert_single_csv(csv_file, output_dir, skip_existing=False)
+        assert result['status'] == 'error'
+        assert 'error' in result  # Just check that there's an error message
+        
+        # Verify no incomplete files remain after failure
+        output_file = output_dir / "NQ_JUN25" / "year=2025" / "month=03" / "20250330.parquet"
+        temp_file = output_file.with_suffix('.parquet.tmp')
+        
+        assert not output_file.exists()
+        assert not temp_file.exists()
+    
+    def test_file_tracking_and_cleanup(self, temp_workspace):
+        """Test file tracking and cleanup system."""
+        # Create test files
+        test_file1 = temp_workspace / "test1.parquet"
+        test_file2 = temp_workspace / "test2.parquet"
+        test_file1.touch()
+        test_file2.touch()
+        
+        # Register files as incomplete
+        _register_incomplete_file(test_file1)
+        _register_incomplete_file(test_file2)
+        
+        # Unregister one (simulate successful completion)
+        from src.backtester.data.converter import _unregister_incomplete_file
+        _unregister_incomplete_file(test_file1)
+        
+        # Cleanup should only remove still-registered file
+        _cleanup_incomplete_files()
+        
+        assert test_file1.exists()      # Should remain (was unregistered)
+        assert not test_file2.exists()  # Should be deleted (still registered)
+    
+    def test_instrument_info_extraction(self, temp_workspace):
+        """Test extraction of instrument info from paths."""
+        # Test normal case
+        csv_file = temp_workspace / "NQ JUN25" / "20250330.csv"
+        csv_file.parent.mkdir(parents=True)
+        csv_file.touch()
+        
+        instrument, year, month = extract_instrument_info(csv_file)
+        assert instrument == "NQ_JUN25"
+        assert year == "2025"
+        assert month == "03"
+        
+        # Test edge case with invalid date
+        csv_file2 = temp_workspace / "ES MAR24" / "invalid.csv"
+        csv_file2.parent.mkdir(parents=True, exist_ok=True)
+        csv_file2.touch()
+        
+        instrument2, year2, month2 = extract_instrument_info(csv_file2)
+        assert instrument2 == "ES_MAR24"
+        # Should fall back to current date for invalid filename
+        assert len(year2) == 4
+        assert len(month2) == 2
+    
+    def test_skip_existing_functionality(self, temp_workspace):
+        """Test skip existing files functionality."""
+        # Create test CSV
+        csv_data = ["L1;0;20250330120000;600000;19381.25;1"]
+        instrument_dir = temp_workspace / "NQ_JUN25"
+        instrument_dir.mkdir(parents=True)
+        csv_file = instrument_dir / "20250330.csv"
+        csv_file.write_text('\n'.join(csv_data))
+        
+        output_dir = temp_workspace / "output"
+        
+        # First conversion
+        result1 = convert_single_csv(csv_file, output_dir, skip_existing=False)
+        assert result1['status'] == 'success'
+        
+        # Second conversion with skip_existing=True
+        result2 = convert_single_csv(csv_file, output_dir, skip_existing=True)
+        assert result2['status'] == 'skipped'
+        assert result2['rows'] == 0
+        
+        # Third conversion with skip_existing=False should overwrite
+        result3 = convert_single_csv(csv_file, output_dir, skip_existing=False)
+        assert result3['status'] == 'success'
+        assert result3['rows'] == 1
+
+
+def test_regex_pattern_matching():
+    """Test regex pattern matching specifically."""
+    instruments = ["NQ JUN22", "NQ JUN23", "NQ MAR24", "ES JUN25"]
+    
+    # Test OR pattern
+    result = _filter_instruments_by_pattern(instruments, "22|23")
+    assert "NQ JUN22" in result
+    assert "NQ JUN23" in result
+    assert "NQ MAR24" not in result
+    
+    # Test complex regex
+    result = _filter_instruments_by_pattern(instruments, "NQ.*2[23]")
+    assert "NQ JUN22" in result
+    assert "NQ JUN23" in result
+    assert "NQ MAR24" not in result
+    assert "ES JUN25" not in result
+
+
+def test_invalid_csv_handling(temp_workspace=None):
+    """Test handling of completely invalid CSV data."""
+    if temp_workspace is None:
+        temp_workspace = Path(tempfile.mkdtemp())
+    
+    try:
+        # Create CSV with no valid records (proper format but invalid record types)
+        invalid_data = ["XX;0;20250330120000;600000;19381.25;1", "YY;0;20250330120001;700000;19382.25;2"]
+        instrument_dir = temp_workspace / "NQ_JUN25"
+        instrument_dir.mkdir(parents=True, exist_ok=True)
+        csv_file = instrument_dir / "20250330.csv"
+        csv_file.write_text('\n'.join(invalid_data))
+        
+        output_dir = temp_workspace / "output"
+        
+        result = convert_single_csv(csv_file, output_dir, skip_existing=False)
+        assert result['status'] == 'error'
+        assert 'No valid records' in result['error']
+        assert result['rows'] == 0
+        
+    finally:
+        if temp_workspace.exists():
+            shutil.rmtree(temp_workspace)
+
+
+if __name__ == '__main__':
+    # Run focused tests
+    pytest.main([__file__, '-v'])

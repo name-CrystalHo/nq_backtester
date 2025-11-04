@@ -14,6 +14,7 @@ from typing import Optional
 from .commands.convert import convert_group
 from .commands.validate import validate_group
 from .commands.info import info_group
+from .commands.backtest import backtest_group
 
 
 @click.group(name='nq-backtester')
@@ -44,6 +45,7 @@ def cli(ctx, verbose: bool, quiet: bool):
 cli.add_command(convert_group)
 cli.add_command(validate_group)
 cli.add_command(info_group)
+cli.add_command(backtest_group)
 
 
 def main():

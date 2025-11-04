@@ -1,0 +1,78 @@
+# Opening Print Dynamic Strategy Configuration  
+# Opening Range Breakout Strategy with Dynamic Stop Management
+
+strategy:
+  name: "OpeningPrintDynamic"
+  description: "Opening range breakout with dynamic trailing stops"
+
+# Opening Print Parameters
+opening_print:
+  opening_print_start: "09:30:00"    # Opening print start time (ET)
+  opening_print_end: "10:30:00"      # Opening print end time (ET)
+  bar_period_minutes: 5              # Bar aggregation period
+
+# Risk Management
+risk:
+  stop_loss_ticks: 60                # Fixed stop loss in ticks
+  profit_multiplier: 4.0             # Profit target multiplier (4:1 R:R)
+  use_dynamic_stop: true             # Use dynamic stop management
+  stop_loss_buffer_points: 3.0       # Buffer points for dynamic stop
+  trail_breakeven_multiplier: 0.0    # Breakeven trailing (0 = disabled)
+  max_daily_loss: 1000.0             # Maximum daily loss in dollars
+
+# Position Management  
+position:
+  max_trades_per_day: 1              # Maximum trades per day
+  max_position_size: 1               # Maximum position size
+  one_trade_per_pullback: true       # Allow only one trade per pullback
+
+# Timing Constraints
+timing:
+  start_time: "09:30:00"             # Strategy start time (ET)
+  end_time: "15:15:00"               # Strategy end time (ET)
+  session_end: "16:00:00"            # Session end time (ET)
+  max_trade_duration: 390            # Max trade duration in minutes (6.5 hours)
+
+# Pattern Detection
+pattern:
+  min_breakout_size: 0.5             # Minimum breakout size in points
+  pullback_confirmation_bars: 1      # Bars to confirm pullback
+  require_momentum: true             # Require momentum confirmation
+
+# Contract Specifications (will be overridden by contract selection)
+contract:
+  tick_size: 0.25                    # Minimum price increment
+  point_value: 20.0                  # Dollar value per point  
+  commission_per_trade: 4.0          # Round trip commission
+
+# Execution Settings
+execution:
+  entry_type: "limit"                # Entry order type: market, limit
+  exit_type: "market"                # Exit order type: market, limit
+  fill_type: "realistic"             # Fill simulation type
+  slippage_ticks: 0                  # Additional slippage in ticks
+  partial_fills: false               # Allow partial fills
+
+# Dynamic Stop Management
+dynamic_stop:
+  use_pullback_extreme: true         # Use pullback candle extreme as initial stop
+  trail_by_bars: true                # Trail stop based on completed bars
+  breakeven_trigger: 1.0             # Multiple of risk to trigger breakeven
+  trail_increment: 0.25              # Trailing increment in points
+
+# Session Management
+session:
+  rth_only: true                     # Trade regular trading hours only
+  handle_gaps: true                  # Handle overnight gaps
+  exit_before_close: true            # Exit positions before session close
+  close_buffer_minutes: 15           # Minutes before close to exit
+
+# Reporting
+reporting:
+  save_trades: true                  # Save individual trade records
+  save_bars: true                    # Save bar data used
+  save_levels: true                  # Save key levels (opening print, etc.)
+  create_charts: true                # Generate performance charts
+  export_csv: true                   # Export results to CSV
+  export_json: true                  # Export results to JSON
+  detailed_logging: false            # Enable detailed execution logging

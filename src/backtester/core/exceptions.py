@@ -51,6 +51,11 @@ class OrderNotFoundError(OrderError):
     pass
 
 
+class ExecutionError(BacktesterError):
+    """Order execution and position management errors."""
+    pass
+
+
 class PositionError(BacktesterError):
     """Position-related errors."""
     pass

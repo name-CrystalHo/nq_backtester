@@ -1,0 +1,851 @@
+"""
+Unit tests for CLI convert commands.
+
+Tests the ninjatrader convert command that converts NinjaTrader CSV files to Parquet.
+"""
+
+import pytest
+import tempfile
+from pathlib import Path
+from unittest.mock import patch, MagicMock, mock_open
+from click.testing import CliRunner
+import polars as pl
+
+from src.backtester.cli.commands.convert import convert_group
+
+
+class TestConvertCommands:
+    """Test convert command functionality."""
+    
+    def setUp(self):
+        """Set up test fixtures."""
+        self.runner = CliRunner()
+    
+    def test_convert_help(self):
+        """Test convert command help."""
+        runner = CliRunner()
+        result = runner.invoke(convert_group, ['--help'])
+        
+        assert result.exit_code == 0
+        assert 'Convert between CSV and Parquet formats' in result.output
+    
+    def test_ninjatrader_help(self):
+        """Test ninjatrader command help."""
+        runner = CliRunner()
+        result = runner.invoke(convert_group, ['ninjatrader', '--help'])
+        
+        assert result.exit_code == 0
+        assert 'Convert NinjaTrader CSV files' in result.output
+        assert '--source' in result.output
+        assert '--output' in result.output
+        assert '--instrument' in result.output
+    
+    @patch('src.backtester.cli.commands.convert.convert_csv_to_parquet')
+    def test_ninjatrader_success(self, mock_convert):
+        """Test successful NinjaTrader conversion."""
+        # Mock converter function
+        mock_convert.return_value = {
+            'total_files': 5,
+            'processed': 5,
+            'skipped': 0,
+            'errors': 0,
+            'total_rows': 1000000,
+            'total_l1': 900000,
+            'total_l2': 100000,
+            'total_size_mb': 150.5,
+            'failed_files': []
+        }
+        
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = runner.invoke(
+                convert_group, 
+                ['ninjatrader', '--output', temp_dir, '--instrument', 'NQ SEP25']
+            )
+            
+            assert result.exit_code == 0
+            assert 'Conversion completed successfully' in result.output
+            assert 'Total files found: 5' in result.output
+            assert 'Successfully processed: 5' in result.output
+            mock_convert.assert_called_once()
+    
+    @patch('src.backtester.cli.commands.convert.convert_csv_to_parquet')
+    def test_ninjatrader_failure(self, mock_convert):
+        """Test failed NinjaTrader conversion."""
+        # Mock converter to raise exception
+        mock_convert.side_effect = Exception("Conversion error")
+        
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = runner.invoke(
+                convert_group,
+                ['ninjatrader', '--output', temp_dir]
+            )
+            
+            assert result.exit_code != 0
+            assert 'Conversion failed' in result.output
+        
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                output_path = Path(temp_dir) / "output.parquet"
+                
+                # Mock converter failure
+                mock_converter = MagicMock()
+                mock_converter.convert.return_value = {
+                    'status': 'error',
+                    'error': 'Test error message'
+                }
+                mock_converter_class.return_value = mock_converter
+                
+                runner = CliRunner()
+                result = runner.invoke(
+                    convert_group,
+                    ['csv-to-parquet', str(csv_path), str(output_path)],
+                    obj={'verbose': False, 'quiet': False}
+                )
+                
+                assert result.exit_code == 0  # Click doesn't exit on our errors
+                assert 'Conversion failed' in result.output
+                assert 'Test error message' in result.output
+        finally:
+            csv_path.unlink()
+    
+    def test_csv_to_parquet_nonexistent_input(self):
+        """Test CSV to Parquet with non-existent input file."""
+        runner = CliRunner()
+        result = runner.invoke(
+            convert_group,
+            ['csv-to-parquet', '/non/existent/file.csv', '/tmp/output.parquet'],
+            obj={'verbose': False, 'quiet': False}
+        )
+        
+        # Click should exit with code 2 for invalid file parameter
+        assert result.exit_code == 2
+    
+    @patch('src.backtester.cli.commands.convert.CSVToParquetConverter')
+    def test_csv_to_parquet_existing_output_no_force(self, mock_converter_class):
+        """Test CSV to Parquet with existing output file without force."""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as csv_file:
+            csv_file.write("L1;1;20240315000001;5150000;18125.25;5;0;;\n")
+            csv_file.flush()
+            csv_path = Path(csv_file.name)
+        
+        try:
+            with tempfile.NamedTemporaryFile(suffix='.parquet', delete=False) as output_file:
+                output_path = Path(output_file.name)
+                
+                runner = CliRunner()
+                result = runner.invoke(
+                    convert_group,
+                    ['csv-to-parquet', str(csv_path), str(output_path)],
+                    obj={'verbose': False, 'quiet': False}
+                )
+                
+                assert result.exit_code == 0
+                assert 'already exists' in result.output
+                assert 'Use --force' in result.output
+            
+            output_path.unlink()
+        finally:
+            csv_path.unlink()
+    
+    @patch('src.backtester.cli.commands.convert.ParquetToCSVConverter')
+    @patch('src.backtester.cli.commands.convert.validate_file_exists')
+    def test_parquet_to_csv_success(self, mock_validate, mock_converter_class):
+        """Test successful Parquet to CSV conversion."""
+        with tempfile.NamedTemporaryFile(suffix='.parquet', delete=False) as pq_file:
+            pq_path = Path(pq_file.name)
+        
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                output_path = Path(temp_dir) / "output.csv"
+                
+                # Mock file validation to succeed
+                mock_validate.return_value = True
+                
+                # Mock converter
+                mock_converter = MagicMock()
+                mock_converter.convert.return_value = {
+                    'status': 'success',
+                    'records_processed': 1000,
+                    'output_size_mb': 0.5
+                }
+                mock_converter_class.return_value = mock_converter
+                
+                runner = CliRunner()
+                result = runner.invoke(
+                    convert_group,
+                    ['parquet-to-csv', str(pq_path), str(output_path)],
+                    obj={'verbose': False, 'quiet': False}
+                )
+                
+                assert result.exit_code == 0
+                assert 'Conversion completed successfully' in result.output
+                mock_converter.convert.assert_called_once()
+        finally:
+            pq_path.unlink()
+    
+    @patch('src.backtester.cli.commands.convert.CSVToParquetConverter')
+    def test_batch_csv_to_parquet_success(self, mock_converter_class):
+        """Test successful batch CSV to Parquet conversion."""
+        with tempfile.TemporaryDirectory() as input_dir:
+            input_path = Path(input_dir)
+            
+            # Create test CSV files
+            for i in range(3):
+                csv_file = input_path / f"test_{i}.csv"
+                with open(csv_file, 'w') as f:
+                    f.write("L1;1;20240315000001;5150000;18125.25;5;0;;\n")
+            
+            with tempfile.TemporaryDirectory() as output_dir:
+                output_path = Path(output_dir)
+                
+                # Mock converter
+                mock_converter = MagicMock()
+                mock_converter.convert.return_value = {
+                    'status': 'success',
+                    'rows': 1
+                }
+                mock_converter_class.return_value = mock_converter
+                
+                runner = CliRunner()
+                result = runner.invoke(
+                    convert_group,
+                    ['batch-csv-to-parquet', str(input_path), str(output_path)],
+                    obj={'verbose': False, 'quiet': False}
+                )
+                
+                assert result.exit_code == 0
+                assert 'Batch conversion completed' in result.output
+                assert 'Successful: 3' in result.output
+    
+    @patch('src.backtester.cli.commands.convert.CSVToParquetConverter')
+    def test_batch_csv_to_parquet_no_files(self, mock_converter_class):
+        """Test batch conversion with no matching files."""
+        with tempfile.TemporaryDirectory() as input_dir:
+            input_path = Path(input_dir)
+            
+            with tempfile.TemporaryDirectory() as output_dir:
+                output_path = Path(output_dir)
+                
+                runner = CliRunner()
+                result = runner.invoke(
+                    convert_group,
+                    ['batch-csv-to-parquet', str(input_path), str(output_path)],
+                    obj={'verbose': False, 'quiet': False}
+                )
+                
+                assert result.exit_code == 0
+                assert 'No files matching pattern' in result.output
+    
+    @patch('src.backtester.cli.commands.convert.pl.read_parquet')
+    @patch('builtins.open', new_callable=mock_open, read_data="L1;1;20240315000001;5150000;18125.25;5;0;;\n")
+    def test_validate_conversion(self, mock_file, mock_read_parquet):
+        """Test conversion validation functionality."""
+        from src.backtester.cli.commands.convert import _validate_conversion
+        
+        # Mock Polars DataFrame
+        mock_df = MagicMock()
+        mock_df.__len__.return_value = 1
+        mock_read_parquet.return_value = mock_df
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            csv_path = Path(temp_dir) / "test.csv"
+            parquet_path = Path(temp_dir) / "test.parquet"
+            
+            # Create dummy files
+            csv_path.touch()
+            parquet_path.touch()
+            
+            # Should not raise exceptions
+            _validate_conversion(csv_path, parquet_path, verbose=False, quiet=True)
+    
+    def test_csv_to_parquet_quiet_mode(self):
+        """Test CSV to Parquet in quiet mode."""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as csv_file:
+            csv_file.write("L1;1;20240315000001;5150000;18125.25;5;0;;\n")
+            csv_file.flush()
+            csv_path = Path(csv_file.name)
+        
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                output_path = Path(temp_dir) / "output.parquet"
+                
+                with patch('src.backtester.cli.commands.convert.CSVToParquetConverter') as mock_conv:
+                    mock_converter = MagicMock()
+                    mock_converter.convert.return_value = {'status': 'success', 'rows': 100}
+                    mock_conv.return_value = mock_converter
+                    
+                    runner = CliRunner()
+                    result = runner.invoke(
+                        convert_group,
+                        ['csv-to-parquet', str(csv_path), str(output_path)],
+                        obj={'verbose': False, 'quiet': True}
+                    )
+                    
+                    assert result.exit_code == 0
+                    # Should have minimal output in quiet mode, but some output is still expected
+                    assert result.exit_code == 0
+        finally:
+            csv_path.unlink()
+
+
+class TestNinjaTraderConvert:
+    """Test ninjatrader-convert command functionality."""
+    
+    def test_ninjatrader_convert_help(self):
+        """Test ninjatrader-convert command help."""
+        runner = CliRunner()
+        result = runner.invoke(convert_group, ['ninjatrader-convert', '--help'])
+        
+        assert result.exit_code == 0
+        assert 'Convert NinjaTrader CSV data to Parquet' in result.output
+        assert '--filter' in result.output
+        assert '--dry-run' in result.output
+        assert '--source' in result.output
+        assert '--output' in result.output
+    
+    def test_ninjatrader_convert_nonexistent_source(self):
+        """Test ninjatrader-convert with non-existent source directory."""
+        runner = CliRunner()
+        result = runner.invoke(
+            convert_group,
+            ['ninjatrader-convert', '--source', '/non/existent/path'],
+            obj={'verbose': False, 'quiet': False}
+        )
+        
+        # Click returns exit code 2 for invalid path arguments
+        assert result.exit_code == 2
+    
+    @patch('src.backtester.cli.commands.convert.Path.rglob')
+    @patch('src.backtester.cli.commands.convert.Path.exists')
+    def test_ninjatrader_convert_no_files_found(self, mock_exists, mock_rglob):
+        """Test ninjatrader-convert when no CSV files are found."""
+        mock_exists.return_value = True
+        mock_rglob.return_value = []  # No files found
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir)
+            
+            runner = CliRunner()
+            result = runner.invoke(
+                convert_group,
+                ['ninjatrader-convert', '--source', str(source_path), '--filter', 'NQ SEP25'],
+                obj={'verbose': False, 'quiet': False}
+            )
+            
+            assert result.exit_code == 0
+            assert 'No CSV files found matching the criteria' in result.output
+    
+    @patch('src.backtester.cli.commands.convert.CSVToParquetConverter')
+    def test_ninjatrader_convert_dry_run(self, mock_converter_class):
+        """Test ninjatrader-convert in dry run mode."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir)
+            
+            # Create mock CSV files
+            csv_files = []
+            for i in range(3):
+                csv_dir = source_path / f"NQ SEP25"
+                csv_dir.mkdir(parents=True, exist_ok=True)
+                csv_file = csv_dir / f"2025090{i}.csv"
+                csv_file.write_text("L1;1;20240315000001;5150000;18125.25;5;0;;\n")
+                csv_files.append(csv_file)
+            
+            runner = CliRunner()
+            result = runner.invoke(
+                convert_group,
+                [
+                    'ninjatrader-convert', 
+                    '--source', str(source_path),
+                    '--filter', 'NQ SEP25',
+                    '--dry-run'
+                ],
+                obj={'verbose': False, 'quiet': False}
+            )
+            
+            assert result.exit_code == 0
+            assert 'DRY RUN: Would convert' in result.output
+            assert 'Found 3 CSV files' in result.output
+            
+            # Should create converter for streaming analysis but not call convert()
+            mock_converter_class.assert_called_once_with(chunk_size=100000)
+            mock_converter_instance = mock_converter_class.return_value
+            
+            # Should not call the actual convert method
+            assert not hasattr(mock_converter_instance.convert, 'called') or not mock_converter_instance.convert.called
+    
+    @patch('src.backtester.cli.commands.convert.CSVToParquetConverter')
+    def test_ninjatrader_convert_with_filter(self, mock_converter_class):
+        """Test ninjatrader-convert with regex filter."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir)
+            output_path = Path(temp_dir) / "output"
+            
+            # Create mock CSV files - some matching filter, some not
+            # Files that should match "NQ SEP25" filter
+            nq_dir = source_path / "NQ SEP25"
+            nq_dir.mkdir(parents=True, exist_ok=True)
+            (nq_dir / "20250901.csv").write_text("L1;1;20240315000001;5150000;18125.25;5;0;;\n")
+            (nq_dir / "20250902.csv").write_text("L1;1;20240315000001;5150000;18125.25;5;0;;\n")
+            
+            # Files that should NOT match filter
+            es_dir = source_path / "ES SEP25"
+            es_dir.mkdir(parents=True, exist_ok=True)
+            (es_dir / "20250901.csv").write_text("L1;1;20240315000001;5150000;18125.25;5;0;;\n")
+            
+            # Mock converter
+            mock_converter = MagicMock()
+            mock_converter.convert.return_value = {'status': 'success', 'rows': 1}
+            mock_converter_class.return_value = mock_converter
+            
+            runner = CliRunner()
+            result = runner.invoke(
+                convert_group,
+                [
+                    'ninjatrader-convert',
+                    '--source', str(source_path),
+                    '--output', str(output_path),
+                    '--filter', 'NQ SEP25',
+                    '--force'
+                ],
+                obj={'verbose': False, 'quiet': False}
+            )
+            
+            assert result.exit_code == 0
+            assert 'Found 2 CSV files' in result.output  # Only NQ files should match
+            assert 'conversion completed' in result.output
+            
+            # Should have called convert twice (for the 2 NQ files)
+            assert mock_converter.convert.call_count == 2
+    
+    def test_ninjatrader_convert_invalid_regex(self):
+        """Test ninjatrader-convert with invalid regex pattern."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir)
+            
+            runner = CliRunner()
+            result = runner.invoke(
+                convert_group,
+                [
+                    'ninjatrader-convert',
+                    '--source', str(source_path),
+                    '--filter', '[invalid regex'  # Invalid regex pattern
+                ],
+                obj={'verbose': False, 'quiet': False}
+            )
+            
+            assert result.exit_code == 0
+            assert 'Invalid regex pattern' in result.output
+    
+    @patch('src.backtester.cli.commands.convert.CSVToParquetConverter')
+    def test_ninjatrader_convert_large_operation_confirm(self, mock_converter_class):
+        """Test ninjatrader-convert confirmation for large operations."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir)
+            
+            # Create a large mock CSV file (simulate >10GB by mocking stat)
+            csv_dir = source_path / "NQ SEP25"
+            csv_dir.mkdir(parents=True, exist_ok=True)
+            csv_file = csv_dir / "large_file.csv"
+            csv_file.write_text("L1;1;20240315000001;5150000;18125.25;5;0;;\n")
+            
+            # Create a mock stat result
+            mock_stat_result = MagicMock()
+            mock_stat_result.st_size = 15 * 1024**3  # 15GB
+            
+            # More targeted mocking - only mock the specific file's stat
+            original_stat = Path.stat
+            def mock_stat_func(self, *args, **kwargs):
+                if self.name == 'large_file.csv':
+                    return mock_stat_result
+                return original_stat(self, *args, **kwargs)
+            
+            with patch.object(Path, 'stat', mock_stat_func):
+                runner = CliRunner()
+                # Use CliRunner input to simulate user saying 'n' (no) to confirmation
+                result = runner.invoke(
+                    convert_group,
+                    [
+                        'ninjatrader-convert',
+                        '--source', str(source_path),
+                        '--filter', 'NQ SEP25'
+                    ],
+                    obj={'verbose': False, 'quiet': False},
+                    input='n\n'  # User says no to confirmation
+                )
+                
+                assert result.exit_code == 0
+                assert 'Large operation' in result.output
+                assert 'Operation cancelled' in result.output
+                # Should not convert if user cancelled
+                mock_converter_class.assert_not_called()
+    
+    @patch('src.backtester.cli.commands.convert.CSVToParquetConverter')
+    def test_ninjatrader_convert_force_skip_confirmation(self, mock_converter_class):
+        """Test ninjatrader-convert with force flag skips confirmation."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir)
+            output_path = Path(temp_dir) / "output"
+            
+            # Create mock CSV file
+            csv_dir = source_path / "NQ SEP25"
+            csv_dir.mkdir(parents=True, exist_ok=True)
+            csv_file = csv_dir / "test.csv"
+            csv_file.write_text("L1;1;20240315000001;5150000;18125.25;5;0;;\n")
+            
+            # Mock converter
+            mock_converter = MagicMock()
+            mock_converter.convert.return_value = {'status': 'success', 'rows': 1}
+            mock_converter_class.return_value = mock_converter
+            
+            # Mock large file size
+            with patch.object(Path, 'stat') as mock_stat:
+                mock_stat.return_value.st_size = 15 * 1024**3  # 15GB
+                
+                runner = CliRunner()
+                result = runner.invoke(
+                    convert_group,
+                    [
+                        'ninjatrader-convert',
+                        '--source', str(source_path),
+                        '--output', str(output_path),
+                        '--filter', 'NQ SEP25',
+                        '--force'
+                    ],
+                    obj={'verbose': False, 'quiet': False}
+                )
+                
+                assert result.exit_code == 0
+                assert 'conversion completed' in result.output
+                # Should convert without asking for confirmation
+                mock_converter.convert.assert_called_once()
+    
+    @patch('src.backtester.cli.commands.convert.CSVToParquetConverter')
+    def test_ninjatrader_convert_quiet_mode(self, mock_converter_class):
+        """Test ninjatrader-convert in quiet mode."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir)
+            output_path = Path(temp_dir) / "output"
+            
+            # Create mock CSV file
+            csv_dir = source_path / "NQ SEP25"
+            csv_dir.mkdir(parents=True, exist_ok=True)
+            csv_file = csv_dir / "test.csv"
+            csv_file.write_text("L1;1;20240315000001;5150000;18125.25;5;0;;\n")
+            
+            # Mock converter
+            mock_converter = MagicMock()
+            mock_converter.convert.return_value = {'status': 'success', 'rows': 1}
+            mock_converter_class.return_value = mock_converter
+            
+            runner = CliRunner()
+            result = runner.invoke(
+                convert_group,
+                [
+                    'ninjatrader-convert',
+                    '--source', str(source_path),
+                    '--output', str(output_path),
+                    '--filter', 'NQ SEP25',
+                    '--force'
+                ],
+                obj={'verbose': False, 'quiet': True}
+            )
+            
+            assert result.exit_code == 0
+            # Should have minimal output in quiet mode
+            assert len([line for line in result.output.split('\n') if line.strip()]) <= 5
+    
+    def test_ninjatrader_convert_dry_run_with_parquet_structure(self):
+        """Test ninjatrader-convert dry-run shows expected parquet structure."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir)
+            output_path = Path(temp_dir) / "output"
+            
+            # Create multiple mock CSV files with different sizes
+            csv_dir = source_path / "NQ SEP25"
+            csv_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create files with mock content and sizes
+            files_data = [
+                ("20250327.csv", "L1;1;20240315000001;5150000;18125.25;5;0;;\n" * 1000),  # ~50KB
+                ("20250328.csv", "L1;1;20240315000002;5150000;18125.50;5;0;;\n" * 2000),  # ~100KB  
+                ("20250329.csv", "L1;1;20240315000003;5150000;18125.75;5;0;;\n" * 500),   # ~25KB
+            ]
+            
+            for filename, content in files_data:
+                csv_file = csv_dir / filename
+                csv_file.write_text(content)
+            
+            runner = CliRunner()
+            result = runner.invoke(
+                convert_group,
+                [
+                    'ninjatrader-convert',
+                    '--source', str(source_path),
+                    '--output', str(output_path), 
+                    '--filter', 'NQ SEP25',
+                    '--dry-run'
+                ],
+                obj={'verbose': False, 'quiet': False}
+            )
+            
+            assert result.exit_code == 0
+            
+            # Verify dry-run output includes structure information
+            assert 'DRY RUN:' in result.output
+            assert 'Would convert 3 files' in result.output
+            assert 'Expected Parquet Structure:' in result.output
+            assert 'Output Directory:' in result.output
+            assert 'NQ SEP25/' in result.output
+            
+            # Verify parquet file names are shown
+            assert '20250327.parquet' in result.output
+            assert '20250328.parquet' in result.output  
+            assert '20250329.parquet' in result.output
+            
+            # Verify estimated size information
+            assert 'Estimated Parquet Size:' in result.output
+            assert 'MB)' in result.output  # Should show file sizes
+            
+            # Should not actually convert files
+            assert not (output_path / "NQ SEP25" / "20250327.parquet").exists()
+    
+    @patch('src.backtester.cli.commands.convert.CSVToParquetConverter')
+    def test_ninjatrader_convert_progress_bar_information(self, mock_converter_class):
+        """Test ninjatrader-convert shows detailed progress information."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir)
+            output_path = Path(temp_dir) / "output"
+            
+            # Create mock CSV files
+            csv_dir = source_path / "NQ SEP25"
+            csv_dir.mkdir(parents=True, exist_ok=True)
+            
+            files_data = [
+                ("20250327.csv", "L1;1;20240315000001;5150000;18125.25;5;0;;\n" * 100),
+                ("20250328.csv", "L1;1;20240315000002;5150000;18125.50;5;0;;\n" * 50),
+            ]
+            
+            for filename, content in files_data:
+                csv_file = csv_dir / filename
+                csv_file.write_text(content)
+            
+            # Mock converter with realistic timing
+            mock_converter = MagicMock()
+            mock_converter.convert.return_value = {'status': 'success', 'rows': 100}
+            mock_converter_class.return_value = mock_converter
+            
+            runner = CliRunner()
+            result = runner.invoke(
+                convert_group,
+                [
+                    'ninjatrader-convert',
+                    '--source', str(source_path),
+                    '--output', str(output_path),
+                    '--filter', 'NQ SEP25',
+                    '--force'
+                ],
+                obj={'verbose': False, 'quiet': False}
+            )
+            
+            assert result.exit_code == 0
+            
+            # Verify progress and timing information is shown
+            assert 'conversion completed' in result.output
+            assert 'Duration:' in result.output
+            assert 'Average speed:' in result.output
+            assert 'Processing rate:' in result.output
+            assert 'Expected compression:' in result.output
+            
+            # Should have converted both files
+            assert mock_converter.convert.call_count == 2
+    
+    def test_ninjatrader_convert_adaptive_streaming_dry_run(self):
+        """Test ninjatrader-convert dry-run shows adaptive streaming decisions."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir)
+            
+            # Create CSV files with different sizes to test streaming decisions
+            csv_dir = source_path / "NQ SEP25"
+            csv_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Small file - should use regular mode
+            small_file = csv_dir / "20250327.csv"
+            small_file.write_text("L1;1;20240315000001;5150000;18125.25;5;0;;\n" * 100)  # ~5KB
+            
+            # Large file - should use streaming mode  
+            large_file = csv_dir / "20250328.csv"
+            large_file.write_text("L1;1;20240315000001;5150000;18125.25;5;0;;\n" * 50000)  # ~2.5MB
+            
+            runner = CliRunner()
+            result = runner.invoke(
+                convert_group,
+                [
+                    'ninjatrader-convert',
+                    '--source', str(source_path),
+                    '--filter', 'NQ SEP25',
+                    '--dry-run',
+                    '--streaming-threshold', '1'  # Low threshold to force streaming decisions
+                ],
+                obj={'verbose': False, 'quiet': False}
+            )
+            
+            assert result.exit_code == 0
+            
+            # Verify adaptive streaming information is shown
+            assert 'Adaptive streaming threshold:' in result.output
+            assert 'Streaming mode:' in result.output  
+            assert 'Regular mode:' in result.output
+            
+            # Should show processing mode indicators
+            assert ('🌊' in result.output or '📄' in result.output)  # At least one mode indicator
+            assert ('stream' in result.output or 'regular' in result.output)  # Mode text
+    
+    @patch('src.backtester.cli.commands.convert.CSVToParquetConverter')
+    def test_ninjatrader_convert_performance_options(self, mock_converter_class):
+        """Test ninjatrader-convert with performance optimization options."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir)
+            output_path = Path(temp_dir) / "output"
+            
+            # Create mock CSV files
+            csv_dir = source_path / "NQ SEP25"
+            csv_dir.mkdir(parents=True, exist_ok=True)
+            
+            files_data = [
+                ("20250327.csv", "L1;1;20240315000001;5150000;18125.25;5;0;;\n" * 1000),
+                ("20250328.csv", "L1;1;20240315000002;5150000;18125.50;5;0;;\n" * 1000),
+            ]
+            
+            for filename, content in files_data:
+                csv_file = csv_dir / filename
+                csv_file.write_text(content)
+            
+            # Mock converter
+            mock_converter = MagicMock()
+            mock_converter.convert.return_value = {'status': 'success', 'rows': 1000}
+            mock_converter_class.return_value = mock_converter
+            
+            runner = CliRunner()
+            result = runner.invoke(
+                convert_group,
+                [
+                    'ninjatrader-convert',
+                    '--source', str(source_path),
+                    '--output', str(output_path),
+                    '--filter', 'NQ SEP25',
+                    '--parallel', '2',
+                    '--streaming-threshold', '50',
+                    '--chunk-size', '200000',
+                    '--force'
+                ],
+                obj={'verbose': False, 'quiet': False}
+            )
+            
+            assert result.exit_code == 0
+            
+            # Verify performance options are applied
+            assert 'workers: 2' in result.output
+            assert 'conversion completed' in result.output
+            assert 'Parallel workers: 2' in result.output
+            
+            # Verify converter was configured with performance settings
+            mock_converter_instance = mock_converter_class.return_value
+            assert mock_converter_instance.streaming_threshold_mb == 50
+            
+            # Should have converted both files
+            assert mock_converter.convert.call_count == 2
+    
+    @patch('src.backtester.cli.commands.convert.CSVToParquetConverter')
+    @patch('psutil.virtual_memory')
+    @patch('os.cpu_count')
+    def test_ninjatrader_convert_adaptive_workers_auto_detect(self, mock_cpu_count, mock_memory, mock_converter_class):
+        """Test ninjatrader-convert with adaptive worker auto-detection."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir)
+            output_path = Path(temp_dir) / "output"
+            
+            # Mock system resources
+            mock_cpu_count.return_value = 8  # 8 CPU cores
+            mock_memory_info = MagicMock()
+            mock_memory_info.total = 16 * 1024**3  # 16GB total RAM
+            mock_memory_info.available = 12 * 1024**3  # 12GB available RAM
+            mock_memory.return_value = mock_memory_info
+            
+            # Create 6 mock CSV files (should result in 6 workers)
+            csv_dir = source_path / "NQ SEP25"
+            csv_dir.mkdir(parents=True, exist_ok=True)
+            
+            for i in range(6):
+                csv_file = csv_dir / f"20250{300 + i}.csv"
+                csv_file.write_text("L1;1;20240315000001;5150000;18125.25;5;0;;\n" * 100)
+            
+            # Mock converter
+            mock_converter = MagicMock()
+            mock_converter.convert.return_value = {'status': 'success', 'rows': 100}
+            mock_converter_class.return_value = mock_converter
+            
+            runner = CliRunner()
+            result = runner.invoke(
+                convert_group,
+                [
+                    'ninjatrader-convert',
+                    '--source', str(source_path),
+                    '--output', str(output_path),
+                    '--filter', 'NQ SEP25',
+                    '--parallel', '0',  # Auto-detect
+                    '--force'
+                ],
+                obj={'verbose': False, 'quiet': False}
+            )
+            
+            assert result.exit_code == 0
+            
+            # Should show adaptive worker detection
+            assert 'System resources:' in result.output
+            assert 'Auto-detected optimal workers:' in result.output
+            assert '6' in result.output  # Should detect 6 workers (limited by file count)
+            
+            # Should have converted all files
+            assert mock_converter.convert.call_count == 6
+    
+    @patch('src.backtester.cli.commands.convert.CSVToParquetConverter')
+    def test_ninjatrader_convert_manual_workers_override(self, mock_converter_class):
+        """Test that manual worker count overrides auto-detection."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir)
+            output_path = Path(temp_dir) / "output"
+            
+            # Create mock CSV files
+            csv_dir = source_path / "NQ SEP25"
+            csv_dir.mkdir(parents=True, exist_ok=True)
+            
+            for i in range(4):
+                csv_file = csv_dir / f"20250{300 + i}.csv"
+                csv_file.write_text("L1;1;20240315000001;5150000;18125.25;5;0;;\n" * 100)
+            
+            # Mock converter
+            mock_converter = MagicMock()
+            mock_converter.convert.return_value = {'status': 'success', 'rows': 100}
+            mock_converter_class.return_value = mock_converter
+            
+            runner = CliRunner()
+            result = runner.invoke(
+                convert_group,
+                [
+                    'ninjatrader-convert',
+                    '--source', str(source_path),
+                    '--output', str(output_path),
+                    '--filter', 'NQ SEP25',
+                    '--parallel', '2',  # Manual override
+                    '--force'
+                ],
+                obj={'verbose': False, 'quiet': False}
+            )
+            
+            assert result.exit_code == 0
+            
+            # Should NOT show auto-detection when manual count is specified
+            assert 'Auto-detected optimal workers:' not in result.output
+            assert 'workers: 2' in result.output  # Should show manual worker count

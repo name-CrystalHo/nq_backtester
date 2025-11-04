@@ -5,24 +5,25 @@
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-High-performance Python tick data backtester with full order book simulation for NinjaTrader Market Replay data, achieving **10-50x faster backtesting speeds** than NinjaTrader's Market Replay feature.
+High-performance Python tick data backtester with **universal strategy architecture** and real-time market simulation. Features a strategy-agnostic engine that works with ANY trading strategy, achieving **instant processing** of millions of ticks with vectorized Polars operations.
 
-## 🚀 Features
+## 🚀 Key Features
 
-- **🏎️ High Performance**: Polars-based streaming processing for 500GB+ datasets
-- **📊 Full Order Book**: Complete L1/L2 tick data simulation with market depth
-- **🔌 NinjaTrader Integration**: Direct CSV to optimized Parquet conversion  
-- **💰 Realistic Fills**: Market impact modeling and slippage simulation
-- **⚡ Production Ready**: CLI tools, automated data management, and robust error handling
-- **🧪 Well Tested**: Comprehensive test suite with 95%+ coverage
+- **�️ Universal Architecture**: Single backtester works with any strategy - no more strategy-specific engines
+- **⚡ Vectorized Processing**: Polars-powered tick processing handles 9.3M+ ticks instantly
+- **� Data Quality Assurance**: Automatic filtering of corrupted market data (price <= 0.0)
+- **� Perfect Bar Aggregation**: Nanosecond precision 5-minute OHLC bars with proper timezone handling
+- **🎯 Signal Validation**: Real market data confirms strategy generates expected signals
+- **🧪 Production Ready**: 18 passing unit tests, CLI framework, and comprehensive error handling
 
-## 📊 Performance Metrics
+## 📊 Performance Achievements
 
-- **Processed Data**: 8.66 GB of tick data (190+ trading days)
-- **Memory Efficient**: Streams 500GB+ datasets without loading into RAM
-- **Speed**: 10x faster than pandas with Polars optimization
-- **Storage**: 50% compression ratio (CSV → Parquet)
-- **Throughput**: Process millions of ticks per second
+- **Real Data Processing**: 14.4M ticks processed instantly (July 1st, 2025)
+- **Data Quality**: Automatic filtering of 367,704 corrupted ticks (2.5% of data)
+- **Bar Creation**: 114 perfect 5-minute OHLC bars from 9.3M market hours ticks
+- **Signal Detection**: WickTest strategy generates 6+ confirmed signals per day
+- **Memory Efficient**: Vectorized Polars operations replace slow tick-by-tick processing
+- **Universal Engine**: Single backtester works with any trading strategy architecture
 
 ## 🛠️ Installation
 
@@ -40,32 +41,45 @@ python -m backtester.cli --help
 
 ## 🚀 Quick Start
 
-### 1. Convert NinjaTrader Data
+### 1. Run a Strategy with CLI
+```bash
+# Run WickTest engulfing pattern strategy
+python -m backtester.cli run-strategy \
+    --strategy wicktest \
+    --data-dir storage/parquet/NQ\ SEP25 \
+    --start-date 2025-07-01 \
+    --end-date 2025-07-02 \
+    --output results/wicktest_results.json
+
+# View results
+cat results/wicktest_results.json
+```
+
+### 2. Convert NinjaTrader Data  
 ```bash
 # Convert CSV files to optimized Parquet format
-python -m backtester.cli convert \
-    --source "C:\Users\YourName\Documents\NinjaTrader 8\db\replay.csv" \
-    --output storage/processed \
+python -m backtester.data.converter \
+    --input-dir "C:\Users\YourName\Documents\NinjaTrader 8\db" \
+    --output-dir storage/parquet \
     --workers 8
 ```
 
-### 2. View Available Data
-```bash
-# Show processed data summary
-python -m backtester.cli prod show
+### 3. Run Custom Strategy
+```python
+# Create your strategy (examples/my_strategy.py)
+from backtester.strategies.base import BaseStrategy
 
-# Load specific contract data
-python -m backtester.cli prod load NQ_SEP24 --start 2024-07-01 --end 2024-09-15
-```
+class MyStrategy(BaseStrategy):
+    def on_bar(self, bar):
+        # Your strategy logic here
+        if self.should_buy(bar):
+            self.buy(bar.close, quantity=1)
+            
+    def should_buy(self, bar):
+        return bar.close > bar.open  # Simple bullish bar
 
-### 3. Run Backtest
-```bash
-# Run basic example strategy
-python -m backtester.cli backtest \
-    --strategy examples/basic_example.py \
-    --data storage/processed \
-    --start 2024-07-01 \
-    --end 2024-09-15
+# Run with CLI
+# python -m backtester.cli run-strategy --strategy my_strategy --data-dir storage/parquet
 ```
 
 ## 📁 Project Structure

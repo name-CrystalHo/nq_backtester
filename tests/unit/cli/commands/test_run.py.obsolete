@@ -1,0 +1,470 @@
+"""
+Unit tests for the run command module.
+
+Tests the strategy runner CLI command functionality including:
+- Strategy listing and discovery
+- Contract listing and configuration
+- Command line argument parsing
+- StrategyRunner class functionality
+"""
+
+import pytest
+import tempfile
+from pathlib import Path
+from unittest.mock import Mock, patch, MagicMock
+from click.testing import CliRunner
+from datetime import datetime
+
+# Handle optional yaml import
+try:
+    import yaml
+    HAS_YAML = True
+except ImportError:
+    HAS_YAML = False
+
+# Import the modules under test
+import sys
+sys.path.append(str(Path(__file__).parent.parent.parent.parent.parent / 'src'))
+
+from backtester.cli.commands.run import (
+    run_group, 
+    StrategyRunner,
+    _list_available_strategies,
+    _list_available_contracts
+)
+
+
+class TestRunCommandGroup:
+    """Test the run command group functionality."""
+    
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.runner = CliRunner()
+        self.temp_dir = tempfile.mkdtemp()
+        self.temp_path = Path(self.temp_dir)
+    
+    def teardown_method(self):
+        """Clean up test fixtures."""
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+    
+    def test_run_group_exists(self):
+        """Test that the run command group exists."""
+        result = self.runner.invoke(run_group, ['--help'])
+        assert result.exit_code == 0
+        assert 'Run trading strategies on market data' in result.output
+    
+    def test_strategy_command_help(self):
+        """Test strategy command help output."""
+        result = self.runner.invoke(run_group, ['strategy', '--help'])
+        assert result.exit_code == 0
+        assert '--strategy' in result.output
+        assert '--contract' in result.output
+        assert '--start-date' in result.output
+        assert '--end-date' in result.output
+        assert '--list-strategies' in result.output
+        assert '--list-contracts' in result.output
+    
+    def test_compare_command_help(self):
+        """Test compare command help output."""
+        result = self.runner.invoke(run_group, ['compare', '--help'])
+        assert result.exit_code == 0
+        assert '--strategies' in result.output
+        assert '--contract' in result.output
+        assert '--start-date' in result.output
+        assert '--end-date' in result.output
+
+
+class TestContractListing:
+    """Test contract listing functionality."""
+    
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.runner = CliRunner()
+    
+    @patch('backtester.cli.commands.run.print_info')
+    @patch('backtester.cli.commands.run.print_warning')
+    def test_list_available_contracts_basic(self, mock_print_warning, mock_print_info):
+        """Test basic contract listing."""
+        _list_available_contracts(verbose=False)
+        
+        # Check that print_info was called with expected contract information
+        print_calls = [call[0][0] for call in mock_print_info.call_args_list]
+        
+        assert any('Available Contracts' in call for call in print_calls)
+        assert any('NQ - NASDAQ-100 E-mini ✅ Data Available' in call for call in print_calls)
+        assert any('Tick Size: $0.25' in call for call in print_calls)
+        assert any('Point Value: $20.0' in call for call in print_calls)
+        
+        # Check warning about NQ only
+        warning_calls = [call[0][0] for call in mock_print_warning.call_args_list]
+        assert any('Only NQ contract currently has market data available' in call for call in warning_calls)
+    
+    @patch('backtester.cli.commands.run.print_info')
+    @patch('backtester.cli.commands.run.print_warning')
+    def test_list_available_contracts_verbose(self, mock_print_warning, mock_print_info):
+        """Test verbose contract listing."""
+        _list_available_contracts(verbose=True)
+        
+        print_calls = [call[0][0] for call in mock_print_info.call_args_list]
+        
+        # Should include margin and session info in verbose mode
+        assert any('Margin: $17,000' in call for call in print_calls)
+        assert any('Session: 9:30-16:00 ET' in call for call in print_calls)
+        
+        # Should show planned future contracts
+        assert any('Planned Future Support' in call for call in print_calls)
+        assert any('ES - S&P 500 E-mini 🚧 Coming Soon' in call for call in print_calls)
+        assert any('YM - Dow Jones E-mini 🚧 Coming Soon' in call for call in print_calls)
+    
+    def test_list_contracts_via_cli(self):
+        """Test contract listing via CLI command."""
+        result = self.runner.invoke(run_group, ['strategy', '--list-contracts'])
+        assert result.exit_code == 0
+        assert 'NQ - NASDAQ-100 E-mini ✅ Data Available' in result.output
+        assert 'Only NQ contract currently has market data available' in result.output
+
+
+class TestStrategyListing:
+    """Test strategy listing functionality."""
+    
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.runner = CliRunner()
+    
+    @patch('backtester.cli.commands.run.print_info')
+    @patch('backtester.cli.commands.run.print_warning')
+    def test_list_available_strategies_no_strategies(self, mock_print_warning, mock_print_info):
+        """Test strategy listing when no strategies are found."""
+        with patch('backtester.cli.commands.run.Path') as mock_path:
+            # Mock empty strategies directory
+            mock_strategies_dir = Mock()
+            mock_strategies_dir.glob.return_value = []
+            mock_path.return_value.__truediv__.return_value = mock_strategies_dir
+            
+            _list_available_strategies(verbose=False)
+            
+            warning_calls = [call[0][0] for call in mock_print_warning.call_args_list]
+            assert any('No strategies found' in call for call in warning_calls)
+    
+    def test_list_strategies_via_cli(self):
+        """Test strategy listing via CLI command."""
+        result = self.runner.invoke(run_group, ['strategy', '--list-strategies'])
+        assert result.exit_code == 0
+        # Should show either strategies or "no strategies found" message
+        assert ('No strategies found' in result.output or 
+                'Available Strategies' in result.output)
+
+
+class TestStrategyRunner:
+    """Test the StrategyRunner class functionality."""
+    
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.temp_dir = tempfile.mkdtemp()
+        self.temp_path = Path(self.temp_dir)
+        self.data_path = self.temp_path / 'data'
+        self.output_path = self.temp_path / 'output'
+        self.data_path.mkdir()
+        
+        self.runner = StrategyRunner(
+            data_path=self.data_path,
+            output_dir=self.output_path,
+            verbose=False,
+            debug=False
+        )
+    
+    def teardown_method(self):
+        """Clean up test fixtures."""
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+    
+    def test_strategy_runner_init(self):
+        """Test StrategyRunner initialization."""
+        assert self.runner.data_path == self.data_path
+        assert self.runner.output_dir == self.output_path
+        assert self.runner.verbose is False
+        assert self.runner.debug is False
+        
+        # Output directory should be created
+        assert self.output_path.exists()
+    
+    def test_get_contract_config_nq(self):
+        """Test getting NQ contract configuration."""
+        config = self.runner.get_contract_config('NQ')
+        
+        assert config is not None
+        assert config['symbol'] == 'NQ'
+        assert config['name'] == 'NASDAQ-100 E-mini'
+        assert config['tick_size'] == 0.25
+        assert config['point_value'] == 20.0
+        assert config['commission_per_trade'] == 4.0
+        assert config['margin_requirement'] == 17000
+        assert config['status'] == 'available'
+    
+    def test_get_contract_config_case_insensitive(self):
+        """Test contract config retrieval is case insensitive."""
+        config_upper = self.runner.get_contract_config('NQ')
+        config_lower = self.runner.get_contract_config('nq')
+        config_mixed = self.runner.get_contract_config('Nq')
+        
+        assert config_upper == config_lower == config_mixed
+    
+    def test_get_contract_config_unsupported(self):
+        """Test getting configuration for unsupported contract."""
+        config = self.runner.get_contract_config('ES')  # ES not yet supported
+        assert config is None
+        
+        config = self.runner.get_contract_config('INVALID')
+        assert config is None
+    
+    def test_load_strategy_config_no_file(self):
+        """Test loading strategy config when no file exists."""
+        config = self.runner.load_strategy_config('nonexistent')
+        assert config == {}
+    
+    def test_load_strategy_config_with_yaml_file(self):
+        """Test loading strategy config from YAML file."""
+        if not HAS_YAML:
+            pytest.skip("PyYAML not available")
+            
+        # Create a temporary config file
+        config_data = {
+            'strategy': {'name': 'TestStrategy'},
+            'risk': {'stop_loss_ticks': 40},
+            'timing': {'start_time': '09:30:00'}
+        }
+        
+        config_file = self.temp_path / 'test_config.yaml'
+        with open(config_file, 'w') as f:
+            yaml.dump(config_data, f)
+        
+        # Mock the yaml import to avoid dependency issues
+        with patch('builtins.__import__') as mock_import:
+            mock_yaml = Mock()
+            mock_yaml.safe_load.return_value = config_data
+            mock_import.return_value = mock_yaml
+            
+            config = self.runner.load_strategy_config('test', config_file)
+            assert config == config_data
+    
+    def test_load_strategy_config_yaml_not_available(self):
+        """Test loading config when PyYAML is not available."""
+        config_file = self.temp_path / 'test_config.yaml'
+        config_file.write_text("strategy:\n  name: test")
+        
+        # Mock ImportError for yaml
+        with patch('builtins.__import__', side_effect=ImportError):
+            with patch('backtester.cli.commands.run.print_warning') as mock_warning:
+                config = self.runner.load_strategy_config('test', config_file)
+                assert config == {}
+                mock_warning.assert_called()
+    
+    def test_load_strategy_nonexistent_file(self):
+        """Test loading strategy that doesn't exist."""
+        strategy_class = self.runner.load_strategy('nonexistent_strategy')
+        assert strategy_class is None
+    
+    def test_run_backtest_placeholder(self):
+        """Test backtest execution placeholder."""
+        mock_strategy_class = Mock()
+        mock_strategy_class.__name__ = 'TestStrategy'
+        
+        contract_config = {
+            'symbol': 'NQ',
+            'name': 'NASDAQ-100 E-mini'
+        }
+        
+        strategy_config = {}
+        start_date = datetime(2025, 1, 1)
+        end_date = datetime(2025, 1, 31)
+        
+        result = self.runner.run_backtest(
+            strategy_class=mock_strategy_class,
+            contract_config=contract_config,
+            strategy_config=strategy_config,
+            start_date=start_date,
+            end_date=end_date
+        )
+        
+        # Should return placeholder results
+        assert result is not None
+        assert result['strategy'] == 'TestStrategy'
+        assert result['contract'] == 'NQ'
+        assert result['start_date'] == start_date.date()
+        assert result['end_date'] == end_date.date()
+        assert 'total_trades' in result
+        assert 'total_pnl' in result
+    
+    def test_display_results(self):
+        """Test results display functionality."""
+        results = {
+            'strategy': 'TestStrategy',
+            'contract': 'NQ',
+            'start_date': datetime(2025, 1, 1).date(),
+            'end_date': datetime(2025, 1, 31).date(),
+            'total_trades': 10,
+            'total_pnl': 1500.0,
+            'win_rate': 0.6,
+            'execution_time': 1.5
+        }
+        
+        # Should not raise any exceptions
+        self.runner.display_results(results, quiet=False)
+        self.runner.display_results(results, quiet=True)  # Should do nothing when quiet
+
+
+class TestCLIIntegration:
+    """Test CLI integration and command execution."""
+    
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.runner = CliRunner()
+    
+    def test_strategy_command_missing_strategy(self):
+        """Test strategy command with missing strategy parameter."""
+        result = self.runner.invoke(run_group, ['strategy'])
+        assert result.exit_code == 0  # Should not exit with error, just show message
+        assert 'Strategy is required' in result.output
+    
+    def test_strategy_command_missing_dates(self):
+        """Test strategy command with missing date parameters."""
+        result = self.runner.invoke(run_group, [
+            'strategy', 
+            '--strategy', 'wicktest'
+        ])
+        assert result.exit_code == 0
+        assert 'Start and end dates are required' in result.output
+    
+    def test_strategy_command_invalid_date_range(self):
+        """Test strategy command with invalid date range."""
+        result = self.runner.invoke(run_group, [
+            'strategy',
+            '--strategy', 'wicktest',
+            '--start-date', '2025-01-31',
+            '--end-date', '2025-01-01'  # End before start
+        ])
+        assert result.exit_code == 0
+        assert 'Start date must be before end date' in result.output
+    
+    def test_compare_command_insufficient_strategies(self):
+        """Test compare command with insufficient strategies."""
+        result = self.runner.invoke(run_group, [
+            'compare',
+            '--strategies', 'wicktest',
+            '--start-date', '2025-01-01',
+            '--end-date', '2025-01-31'
+        ])
+        assert result.exit_code == 0
+        assert 'At least 2 strategies required' in result.output
+    
+    @patch('backtester.cli.commands.run.StrategyRunner')
+    def test_strategy_command_successful_execution(self, mock_strategy_runner_class):
+        """Test successful strategy command execution."""
+        # Mock StrategyRunner instance
+        mock_runner = Mock()
+        mock_strategy_runner_class.return_value = mock_runner
+        
+        # Mock successful strategy loading
+        mock_strategy_class = Mock()
+        mock_runner.load_strategy.return_value = mock_strategy_class
+        
+        # Mock contract config
+        mock_contract_config = {'symbol': 'NQ', 'name': 'NASDAQ-100 E-mini'}
+        mock_runner.get_contract_config.return_value = mock_contract_config
+        
+        # Mock strategy config
+        mock_runner.load_strategy_config.return_value = {}
+        
+        # Mock backtest results
+        mock_results = {
+            'strategy': 'wicktest',
+            'total_trades': 5,
+            'total_pnl': 250.0
+        }
+        mock_runner.run_backtest.return_value = mock_results
+        
+        result = self.runner.invoke(run_group, [
+            'strategy',
+            '--strategy', 'wicktest',
+            '--contract', 'NQ',
+            '--start-date', '2025-01-01',
+            '--end-date', '2025-01-31'
+        ])
+        
+        assert result.exit_code == 0
+        assert 'Starting backtest: wicktest on NQ' in result.output
+        
+        # Verify StrategyRunner was called correctly
+        mock_runner.load_strategy.assert_called_once_with('wicktest')
+        mock_runner.get_contract_config.assert_called_once_with('NQ')
+        mock_runner.run_backtest.assert_called_once()
+        mock_runner.display_results.assert_called_once_with(mock_results, False)
+
+
+class TestErrorHandling:
+    """Test error handling and edge cases."""
+    
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.runner = CliRunner()
+    
+    @patch('backtester.cli.commands.run.StrategyRunner')
+    def test_strategy_not_found_error(self, mock_strategy_runner_class):
+        """Test handling when strategy is not found."""
+        mock_runner = Mock()
+        mock_strategy_runner_class.return_value = mock_runner
+        mock_runner.load_strategy.return_value = None  # Strategy not found
+        
+        result = self.runner.invoke(run_group, [
+            'strategy',
+            '--strategy', 'nonexistent',
+            '--start-date', '2025-01-01',
+            '--end-date', '2025-01-31'
+        ])
+        
+        assert result.exit_code == 0
+        assert "Strategy 'nonexistent' not found" in result.output
+    
+    @patch('backtester.cli.commands.run.StrategyRunner')
+    def test_contract_not_supported_error(self, mock_strategy_runner_class):
+        """Test handling when contract is not supported."""
+        mock_runner = Mock()
+        mock_strategy_runner_class.return_value = mock_runner
+        mock_runner.load_strategy.return_value = Mock()  # Strategy exists
+        mock_runner.get_contract_config.return_value = None  # Contract not supported
+        
+        result = self.runner.invoke(run_group, [
+            'strategy',
+            '--strategy', 'wicktest',
+            '--contract', 'INVALID',
+            '--start-date', '2025-01-01',
+            '--end-date', '2025-01-31'
+        ])
+        
+        assert result.exit_code == 0
+        assert "Contract 'INVALID' not supported" in result.output
+    
+    @patch('backtester.cli.commands.run.StrategyRunner')
+    def test_strategy_execution_exception(self, mock_strategy_runner_class):
+        """Test handling of exceptions during strategy execution."""
+        mock_runner = Mock()
+        mock_strategy_runner_class.return_value = mock_runner
+        mock_runner.load_strategy.return_value = Mock()
+        mock_runner.get_contract_config.return_value = {'symbol': 'NQ'}
+        mock_runner.load_strategy_config.return_value = {}
+        mock_runner.run_backtest.side_effect = Exception("Test exception")
+        
+        result = self.runner.invoke(run_group, [
+            'strategy',
+            '--strategy', 'wicktest',
+            '--start-date', '2025-01-01',
+            '--end-date', '2025-01-31'
+        ])
+        
+        assert result.exit_code == 0
+        assert 'Strategy execution failed' in result.output
+
+
+if __name__ == '__main__':
+    pytest.main([__file__, '-v'])
